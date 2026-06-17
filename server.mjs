@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { appendFile, readFile, writeFile } from 'node:fs/promises';
+import { appendFile, readFile, writeFile, stat, rename } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -149,6 +149,43 @@ const cacheByRegion = new Map();
 const notifiedKeys = new Set();
 const reportRateLimits = new Map();
 const confirmationRateLimits = new Map();
+
+// --- Resource guards: keep memory and disk bounded on long-running servers ---
+const NOTIFIED_KEYS_MAX = 5000;                 // cap the in-memory dedupe set
+const OUTBOX_MAX_BYTES = 5 * 1024 * 1024;       // rotate alert-outbox.jsonl at 5 MB (keeps 1 backup => ~10 MB max)
+const RATE_LIMIT_SWEEP_MS = 10 * 60 * 1000;     // drop idle per-IP rate-limit buckets
+
+// Add a notified key and evict the oldest so the Set never grows unbounded.
+function rememberNotified(key) {
+  notifiedKeys.add(key);
+  while (notifiedKeys.size > NOTIFIED_KEYS_MAX) {
+    notifiedKeys.delete(notifiedKeys.values().next().value);
+  }
+}
+
+// Append to the outbox, rotating the file once it exceeds the size cap.
+async function appendOutbox(record) {
+  try {
+    if (existsSync(NOTIFICATION_OUTBOX_FILE)) {
+      const info = await stat(NOTIFICATION_OUTBOX_FILE);
+      if (info.size > OUTBOX_MAX_BYTES) {
+        await rename(NOTIFICATION_OUTBOX_FILE, `${NOTIFICATION_OUTBOX_FILE}.1`);
+      }
+    }
+  } catch { /* rotation is best-effort */ }
+  await appendFile(NOTIFICATION_OUTBOX_FILE, `${JSON.stringify(record)}\n`, 'utf8');
+}
+
+// Periodically drop per-IP rate-limit buckets whose timestamps have all aged out.
+function sweepRateLimits() {
+  const cutoff = Date.now() - 60 * 60 * 1000;
+  for (const map of [reportRateLimits, confirmationRateLimits]) {
+    for (const [ip, stamps] of map) {
+      if (!stamps.some(ts => ts > cutoff)) map.delete(ip);
+    }
+  }
+}
+setInterval(sweepRateLimits, RATE_LIMIT_SWEEP_MS).unref();
 
 function splitEnv(value = '') {
   return value.split(',').map(s => s.trim()).filter(Boolean);
@@ -930,11 +967,11 @@ async function queueReportConfirmationRequests(report) {
     };
     try {
       await deliverNotification(payload);
-      notifiedKeys.add(key);
+      rememberNotified(key);
       queued++;
     } catch (error) {
       failed++;
-      await appendFile(NOTIFICATION_OUTBOX_FILE, `${JSON.stringify({ ...payload, delivery: 'failed', error: error.message })}\n`, 'utf8');
+      await appendOutbox({ ...payload, delivery: 'failed', error: error.message });
     }
   }
 
@@ -1018,7 +1055,7 @@ function notificationMessage(event) {
 
 async function deliverNotification(payload) {
   if (!NOTIFY_WEBHOOK_URL) {
-    await appendFile(NOTIFICATION_OUTBOX_FILE, `${JSON.stringify({ ...payload, delivery: 'queued-local' })}\n`, 'utf8');
+    await appendOutbox({ ...payload, delivery: 'queued-local' });
     return 'queued-local';
   }
 
@@ -1028,7 +1065,7 @@ async function deliverNotification(payload) {
     body: JSON.stringify(payload)
   });
   if (!r.ok) throw new Error(`notify webhook HTTP ${r.status}`);
-  await appendFile(NOTIFICATION_OUTBOX_FILE, `${JSON.stringify({ ...payload, delivery: 'webhook-sent' })}\n`, 'utf8');
+  await appendOutbox({ ...payload, delivery: 'webhook-sent' });
   return 'webhook-sent';
 }
 
@@ -1065,11 +1102,11 @@ async function queueNotifications(events) {
       };
       try {
         await deliverNotification(payload);
-        notifiedKeys.add(key);
+        rememberNotified(key);
         queued++;
       } catch (error) {
         failed++;
-        await appendFile(NOTIFICATION_OUTBOX_FILE, `${JSON.stringify({ ...payload, delivery: 'failed', error: error.message })}\n`, 'utf8');
+        await appendOutbox({ ...payload, delivery: 'failed', error: error.message });
       }
     }
   }

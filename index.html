@@ -408,7 +408,7 @@
     <button type="button" data-tab="report">REPORT</button>
     <button type="button" data-tab="signup">SIGN UP</button>
     <button type="button" data-tab="plans">PLANS</button>
-    <button type="button" data-tab="changes">LOG</button>
+    <button type="button" data-tab="changes">CHANGELOG</button>
   </div>
   <section class="dashTab active" id="tab-alerts">
     <div id="threatSummary"><span>CONNECTING TO SOURCES</span><span class="meta">--</span></div>
@@ -561,6 +561,8 @@
   <section class="dashTab" id="tab-changes">
     <div class="guideBlock">
       <h4>CHANGELOG</h4>
+      <div class="changeItem"><span class="date">0.9</span><span>Added resource guards so long-running servers stay bounded: capped the in-memory notify dedupe set, rotate the alert outbox at 5 MB, and sweep idle rate-limit buckets.</span></div>
+      <div class="changeItem"><span class="date">0.8</span><span>Protected the app behind HTTP Basic Auth (env-based credentials, no secrets in source) and renamed this tab to CHANGELOG.</span></div>
       <div class="changeItem"><span class="date">0.7</span><span>Added subscriber verification requests and community confirmation for public reports.</span></div>
       <div class="changeItem"><span class="date">0.6</span><span>Added public surveillance drone report intake with review-first handling and pending report counts.</span></div>
       <div class="changeItem"><span class="date">0.5</span><span>Added selectable alert regions with Lebanon as default and region-aware source filtering.</span></div>
