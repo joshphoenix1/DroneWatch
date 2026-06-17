@@ -1076,11 +1076,12 @@ setInterval(pushPoll, 60_000).unref();
 // --- Live airspace: ADS-B aircraft (free, no key, multi-source fallback) ------
 const aircraftCache = new Map(); // regionId -> { until, data }
 const AIRCRAFT_TTL_MS = 8000;
-const INTEREST_RANK = { emergency: 0, military: 1, unidentified: 2, normal: 3 };
+const INTEREST_RANK = { emergency: 0, drone: 1, military: 2, unidentified: 3, normal: 4 };
 
-function aircraftInterest(a) {
+function aircraftInterest(a, uav) {
   const sq = String(a.squawk || '');
   if (['7500', '7600', '7700'].includes(sq) || (a.emergency && a.emergency !== 'none')) return 'emergency';
+  if (uav) return 'drone';
   if ((Number(a.dbFlags) & 1) === 1) return 'military';
   if (!String(a.flight || '').trim()) return 'unidentified';
   return 'normal';
@@ -1117,6 +1118,10 @@ async function fetchAircraft(region) {
     const lat = Number(a.lat), lon = Number(a.lon);
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
     const onGround = a.alt_baro === 'ground';
+    const altN = Number.isFinite(Number(a.alt_baro)) ? Number(a.alt_baro) : null;
+    const gsN = Number.isFinite(Number(a.gs)) ? Number(a.gs) : null;
+    const uav = ['B6', 'B7'].includes(String(a.category || '').toUpperCase()); // ADS-B UAV emitter categories
+    const lowSlow = !onGround && altN != null && altN < 2500 && gsN != null && gsN < 90;
     aircraft.push({
       hex: a.hex,
       callsign: String(a.flight || '').trim() || null,
@@ -1130,11 +1135,12 @@ async function fetchAircraft(region) {
       category: a.category || null,
       emergency: (a.emergency && a.emergency !== 'none') ? a.emergency : null,
       military: (Number(a.dbFlags) & 1) === 1,
+      uav, lowSlow,
       distanceKm: Number.isFinite(Number(a.dst))
         ? Math.round(Number(a.dst) * 1.852 * 10) / 10
         : Math.round(distanceKm(region.center.lat, region.center.lon, lat, lon) * 10) / 10,
       compass: compass(bearingDeg(region.center.lat, region.center.lon, lat, lon)),
-      interest: aircraftInterest(a)
+      interest: aircraftInterest(a, uav)
     });
   }
   aircraft.sort((x, y) => (INTEREST_RANK[x.interest] - INTEREST_RANK[y.interest]) || x.distanceKm - y.distanceKm);
@@ -1144,7 +1150,9 @@ async function fetchAircraft(region) {
       total: aircraft.length,
       military: aircraft.filter(a => a.military).length,
       emergency: aircraft.filter(a => a.emergency).length,
-      unidentified: aircraft.filter(a => !a.callsign).length
+      unidentified: aircraft.filter(a => !a.callsign).length,
+      drones: aircraft.filter(a => a.uav).length,
+      lowSlow: aircraft.filter(a => a.lowSlow).length
     },
     aircraft: aircraft.slice(0, 80)
   };

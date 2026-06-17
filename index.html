@@ -74,7 +74,12 @@
   .acPin.unidentified{color:#eaf0f6}
   .acPin.military{color:#ff4d4d}
   .acPin.emergency{color:#ff2424}
-  .acPin.military,.acPin.emergency{filter:drop-shadow(0 0 5px currentColor)}
+  .acPin.drone{color:#b48cff}
+  .acPin.military,.acPin.emergency,.acPin.drone{filter:drop-shadow(0 0 5px currentColor)}
+  .acRow.drone{border-left-color:#b48cff}
+  .airspaceSummary .drn{color:#b48cff}
+  .droneFuse{font-size:10px;color:#b48cff;letter-spacing:.05em;margin:4px 0 8px;padding:4px 6px;
+    border:1px solid rgba(180,140,255,.3);background:rgba(180,140,255,.06)}
   .acglide .ac-icon{transition:transform 1s linear}
   .acPulse{position:absolute;left:50%;top:50%;width:24px;height:24px;margin:-12px 0 0 -12px;border-radius:50%;
     border:1.5px solid currentColor;opacity:0;animation:acping 1.6s ease-out infinite;pointer-events:none}
@@ -687,6 +692,7 @@
   <section class="dashTab" id="tab-changes">
     <div class="guideBlock">
       <h4>CHANGELOG</h4>
+      <div class="changeItem"><span class="date">1.5</span><span>Drone-source fusion: ADS-B UAV emitter detection + low/slow heuristics (purple contacts), and a fused DRONE WATCH readout combining ADS-B UAVs, low/slow tracks, CAP/OSINT drone alerts, and crowd reports.</span></div>
       <div class="changeItem"><span class="date">1.4</span><span>World-class notifications: Web Push (VAPID) that wakes a closed device with severe/extreme alerts, deep-linking to the region. Background poller sends even with no tab open; dead subscriptions auto-pruned. Enable from the SIGN UP tab.</span></div>
       <div class="changeItem"><span class="date">1.3</span><span>LIVE AIRSPACE RADAR: real-time ADS-B aircraft from multiple no-key sources (adsb.lol / adsb.fi / airplanes.live) as gliding, heading-rotated map markers with military / emergency / unidentified flagging, a new AIRSPACE tab + always-on readout, click-to-fly-to a contact, and cinematic fly-through camera on region change.</span></div>
       <div class="changeItem"><span class="date">1.2</span><span>Life-safety tools: SOS and "I'm safe" family check-in via private circle codes (shareable link, coordinates fuzzed for privacy), plus a nearest shelter / hospital / pharmacy locator using OpenStreetMap (no key). Added one-click deploy configs (Render blueprint + Dockerfile) for a permanent URL.</span></div>
@@ -2834,7 +2840,7 @@ function stepAircraft(){
     rec.marker.setLatLng([rec.lat,rec.lon]);
   }
 }
-const AC_RANK={emergency:0,military:1,unidentified:2,normal:3};
+const AC_RANK={emergency:0,drone:1,military:2,unidentified:3,normal:4};
 function renderAirspace(){
   const sum=$('airspaceSummary'), list=$('airspaceList');
   if(sum){
@@ -2843,7 +2849,17 @@ function renderAirspace(){
       sum.innerHTML='<b>'+(s.total||0)+'</b> live contacts'
         +(s.military?' · <span class="mil">'+s.military+' MIL</span>':'')
         +(s.emergency?' · <span class="emg">'+s.emergency+' EMG</span>':'')
-        +(s.unidentified?' · '+s.unidentified+' UNID':''); }
+        +(s.drones?' · <span class="drn">'+s.drones+' UAV</span>':'')
+        +(s.unidentified?' · '+s.unidentified+' UNID':'');
+      // fused drone picture: ADS-B UAV + low/slow + CAP/OSINT drone alerts + crowd reports
+      const ev=threatState.events||[];
+      const alertDrones=ev.filter(e=>e.type==='drone'||e.type==='rocket-missile').length;
+      const reps=(threatState.payload&&threatState.payload.summary)?(threatState.payload.summary.publicReportsPending+threatState.payload.summary.publicReportsCorroborated):0;
+      const fuse=$('droneFuse');
+      const txt='⬢ DRONE WATCH (fused): '+(s.drones||0)+' ADS-B UAV · '+(s.lowSlow||0)+' low/slow · '+alertDrones+' drone alerts · '+reps+' reports';
+      if(fuse) fuse.textContent=txt;
+      else if(sum.parentNode){ const dv=document.createElement('div'); dv.id='droneFuse'; dv.className='droneFuse'; dv.textContent=txt; sum.parentNode.insertBefore(dv,sum.nextSibling); }
+    }
   }
   if(list){
     const arr=[...airState.byHex.values()].map(r=>r.data)
@@ -2851,7 +2867,7 @@ function renderAirspace(){
     if(!arr.length){ list.innerHTML='<div class="muted">No ADS-B contacts in range right now.</div>'; }
     else{
       list.innerHTML=arr.map(a=>{
-        const c=a.interest==='military'?'mil':a.interest==='emergency'?'emg':a.interest==='unidentified'?'unid':'';
+        const c=a.interest==='military'?'mil':a.interest==='emergency'?'emg':a.interest==='drone'?'drone':a.interest==='unidentified'?'unid':'';
         return '<div class="acRow '+c+'" data-hex="'+htmlEsc(a.hex)+'"><span class="acCs">'+htmlEsc(a.callsign||a.hex||'—')+'</span>'
           +'<span class="acMeta">'+htmlEsc(a.type||'')+' '+(a.onGround?'GND':(a.altFt!=null?Math.round(a.altFt/100)+'FL':''))+'<br>'+a.distanceKm+'km '+a.compass+'</span></div>';
       }).join('');
@@ -2863,7 +2879,7 @@ function updateAirspaceLegend(){
   const lg=$('globalLegend'); if(!lg) return;
   const s=airState.summary, region=selectedRegion();
   lg.innerHTML='<b>AIRSPACE — '+htmlEsc(region?.label||'Region')+'</b><br>'
-    +(airState.error?'live ADS-B unavailable':((s?s.total:0)+' live aircraft'+(s&&s.military?' · '+s.military+' military':'')+(s&&s.emergency?' · '+s.emergency+' emergency':'')))
+    +(airState.error?'live ADS-B unavailable':((s?s.total:0)+' live aircraft'+(s&&s.military?' · '+s.military+' military':'')+(s&&s.drones?' · '+s.drones+' UAV':'')+(s&&s.emergency?' · '+s.emergency+' emergency':'')))
     +'<br><span style="color:#5d6873">live ADS-B + CAP/OSINT fusion</span>';
 }
 function focusAircraft(hex){
