@@ -32,6 +32,14 @@
   body{font-family:'IBM Plex Mono',monospace;color:var(--amber);cursor:crosshair;
        -webkit-user-select:none;user-select:none}
   canvas{display:block}
+  /* Accessibility: respect reduced-motion (kills flashing FPV/glitch layers; the
+     Three.js loop is additionally gated in JS via PERF.reduced). */
+  @media (prefers-reduced-motion: reduce){
+    *,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important}
+    #fpvfx,#glitch{display:none!important}
+  }
+  .sr-only{position:absolute!important;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
+    clip:rect(0,0,0,0);white-space:nowrap;border:0}
   #c{position:fixed;inset:0;transition:filter .12s}
   #c.glitchy{filter:saturate(1.35) contrast(1.18) brightness(1.06) hue-rotate(3deg)}
   #globalMap{position:fixed;inset:0;z-index:7;background:#07111c;overflow:hidden}
@@ -382,6 +390,9 @@
 </style>
 </head>
 <body>
+<!-- screen-reader live regions: critical alerts interrupt (assertive), status is polite -->
+<div id="a11yAlert" class="sr-only" role="alert" aria-live="assertive" aria-atomic="true"></div>
+<div id="a11yStatus" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
 <canvas id="c"></canvas>
 <div id="globalMap">
   <div id="leafletMap"></div>
@@ -571,6 +582,7 @@
   <section class="dashTab" id="tab-changes">
     <div class="guideBlock">
       <h4>CHANGELOG</h4>
+      <div class="changeItem"><span class="date">1.1</span><span>Accessibility: screen-reader live-region announcements for new severe/extreme alerts (role=alert), reduced-motion support that disables the flashing FPV/glitch effects, and best-effort vibration on new alerts.</span></div>
       <div class="changeItem"><span class="date">1.0</span><span>Live data + installable app: real no-key OSINT/hazard feeds (USGS earthquakes, NASA EONET, regional conflict-news RSS), real-time push via Server-Sent Events with a LIVE indicator, and a PWA (installable, offline shell, last-known alerts cached). Forced IPv4 egress so feeds stay reliable.</span></div>
       <div class="changeItem"><span class="date">0.9</span><span>Added resource guards so long-running servers stay bounded: capped the in-memory notify dedupe set, rotate the alert outbox at 5 MB, and sweep idle rate-limit buckets.</span></div>
       <div class="changeItem"><span class="date">0.8</span><span>Protected the app behind HTTP Basic Auth (env-based credentials, no secrets in source) and renamed this tab to CHANGELOG.</span></div>
@@ -1697,7 +1709,7 @@ let state='BOOT';
 function setChrome(on){
   for(const id of ['topbar','hint','contacts','threatPanel']) $(id).classList.toggle('on',on);
 }
-function glitchFX(){ const g=$('glitch'); g.classList.remove('go'); void g.offsetWidth; g.classList.add('go'); }
+function glitchFX(){ if(PERF.reduced) return; const g=$('glitch'); g.classList.remove('go'); void g.offsetWidth; g.classList.add('go'); }
 
 function intercept(d){
   state='INTERCEPT';
@@ -2360,6 +2372,21 @@ async function fetchThreatFeed(){
     renderThreatPanel();
   }
 }
+const announcedSet=new Set();
+function announceAlerts(){
+  try{
+    const hi=(threatState.events||[]).filter(e=>e.severity==='extreme'||e.severity==='severe');
+    const fresh=hi.filter(e=>!announcedSet.has(e.id));
+    const statusEl=document.getElementById('a11yStatus');
+    if(statusEl) statusEl.textContent=(threatState.events.length||0)+' active alert'+(threatState.events.length===1?'':'s')+' for '+(threatState.payload?.region?.label||'selected region');
+    if(!fresh.length) return;
+    fresh.forEach(e=>announcedSet.add(e.id));
+    const el=document.getElementById('a11yAlert');
+    if(el){ const e=fresh[0];
+      el.textContent=(fresh.length>1?fresh.length+' new alerts. ':'')+(e.severity||'').toUpperCase()+': '+(e.title||'Threat alert')+'. '+(e.recommendation||''); }
+    if('vibrate' in navigator){ try{ navigator.vibrate([200,100,200]); }catch(_){} } // best-effort, Android-Chromium only
+  }catch(_){}
+}
 function applyThreatPayload(payload){
   threatState.payload=payload;
   threatState.events=payload.events||[];
@@ -2368,6 +2395,7 @@ function applyThreatPayload(payload){
   syncThreatSprites();
   drawGlobalMap();
   renderThreatPanel();
+  announceAlerts();
 }
 function syncThreatSprites(){
   const active=new Set();
