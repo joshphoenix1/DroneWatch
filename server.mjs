@@ -3,7 +3,7 @@ import { appendFile, readFile, writeFile, stat, rename } from 'node:fs/promises'
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual, randomBytes } from 'node:crypto';
 import dns from 'node:dns';
 import net from 'node:net';
 import { XMLParser } from 'fast-xml-parser';
@@ -858,6 +858,141 @@ async function fetchNewsFeeds(region) {
   return { events: deduped, sourceStatus };
 }
 
+// --- Life-safety: nearest places (OSM Overpass, no key) ----------------------
+const placesCache = new Map(); // `${kind}:${lat2}:${lon2}` -> { until, places }
+const PLACES_TTL_MS = 6 * 60 * 60 * 1000;
+const PLACES_MAX_CACHE = 200;
+
+function toRad(d) { return d * Math.PI / 180; }
+function bearingDeg(lat1, lon1, lat2, lon2) {
+  const y = Math.sin(toRad(lon2 - lon1)) * Math.cos(toRad(lat2));
+  const x = Math.cos(toRad(lat1)) * Math.sin(toRad(lat2))
+    - Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(toRad(lon2 - lon1));
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+function compass(b) { return ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'][Math.round(b / 45) % 8]; }
+
+function overpassQL(kind, lat, lon) {
+  const d = 0.09; // ~10 km half-box
+  const bb = `(${(lat - d).toFixed(4)},${(lon - d).toFixed(4)},${(lat + d).toFixed(4)},${(lon + d).toFixed(4)})`;
+  const sel = {
+    shelter: `nwr["amenity"="shelter"]${bb};nwr["emergency"="assembly_point"]${bb};nwr["military"="bunker"]${bb};nwr["building"="bunker"]${bb};`,
+    hospital: `nwr["amenity"="hospital"]${bb};nwr["amenity"="clinic"]${bb};`,
+    pharmacy: `nwr["amenity"="pharmacy"]${bb};`
+  }[kind] || `nwr["amenity"="hospital"]${bb};`;
+  return `[out:json][timeout:20];(${sel});out center 80;`;
+}
+
+function placeName(kind, tags = {}) {
+  if (tags.name) return tags.name;
+  if (kind === 'shelter') return tags.shelter_type === 'bomb_shelter' ? 'Bomb shelter' : (tags.emergency === 'assembly_point' ? 'Assembly point' : 'Shelter');
+  if (kind === 'hospital') return tags.amenity === 'clinic' ? 'Clinic' : 'Hospital';
+  if (kind === 'pharmacy') return 'Pharmacy';
+  return 'Place';
+}
+
+async function fetchPlaces(kind, lat, lon) {
+  kind = ['shelter', 'hospital', 'pharmacy'].includes(kind) ? kind : 'shelter';
+  const key = `${kind}:${lat.toFixed(2)}:${lon.toFixed(2)}`;
+  const cached = placesCache.get(key);
+  if (cached && Date.now() < cached.until) return cached.places;
+  const r = await fetch('https://overpass-api.de/api/interpreter', {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain', 'User-Agent': 'DroneWatchMVP/0.1 public-alert-fusion' },
+    body: overpassQL(kind, lat, lon),
+    signal: AbortSignal.timeout(20000)
+  });
+  if (!r.ok) throw new Error(`overpass HTTP ${r.status}`);
+  const doc = await r.json();
+  const places = [];
+  for (const el of doc.elements || []) {
+    const plat = el.lat ?? el.center?.lat;
+    const plon = el.lon ?? el.center?.lon;
+    if (!Number.isFinite(plat) || !Number.isFinite(plon)) continue;
+    const brg = bearingDeg(lat, lon, plat, plon);
+    places.push({
+      id: `${el.type}/${el.id}`,
+      name: placeName(kind, el.tags),
+      kind,
+      lat: plat, lon: plon,
+      distanceKm: Math.round(distanceKm(lat, lon, plat, plon) * 100) / 100,
+      bearing: Math.round(brg),
+      compass: compass(brg)
+    });
+  }
+  places.sort((a, b) => a.distanceKm - b.distanceKm);
+  const top = places.slice(0, 12);
+  placesCache.set(key, { until: Date.now() + PLACES_TTL_MS, places: top });
+  if (placesCache.size > PLACES_MAX_CACHE) placesCache.delete(placesCache.keys().next().value);
+  return top;
+}
+
+// --- Life-safety: family "I'm safe" check-in groups ---------------------------
+const GROUPS_FILE = path.join(__dirname, 'groups.json');
+const GROUP_MAX = 1000;
+const GROUP_MEMBER_MAX = 60;
+const GROUP_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+function randomGroupCode() {
+  const alphabet = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // no ambiguous 0/O/1/I/L
+  const b = randomBytes(6);
+  let s = '';
+  for (let i = 0; i < 6; i++) s += alphabet[b[i] % alphabet.length];
+  return s;
+}
+function normalizeCode(code) { return String(code || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8); }
+function fuzzCoord(n) { return Number.isFinite(Number(n)) ? Math.round(Number(n) * 100) / 100 : null; } // ~1km privacy fuzz
+
+function pruneGroups(doc) {
+  const now = Date.now();
+  for (const [code, g] of Object.entries(doc.groups)) {
+    if (now - new Date(g.createdAt).getTime() > GROUP_TTL_MS) delete doc.groups[code];
+  }
+  const codes = Object.keys(doc.groups);
+  if (codes.length > GROUP_MAX) {
+    codes.sort((a, b) => new Date(doc.groups[a].createdAt) - new Date(doc.groups[b].createdAt));
+    for (const c of codes.slice(0, codes.length - GROUP_MAX)) delete doc.groups[c];
+  }
+}
+function rosterView(g) {
+  return Object.entries(g.members)
+    .map(([id, m]) => ({ memberId: id, name: m.name, status: m.status, lat: m.lat, lon: m.lon, updatedAt: m.updatedAt }))
+    .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+}
+async function createGroup() {
+  const doc = await readJsonFile(GROUPS_FILE, { groups: {} });
+  pruneGroups(doc);
+  let code;
+  do { code = randomGroupCode(); } while (doc.groups[code]);
+  doc.groups[code] = { createdAt: new Date().toISOString(), members: {} };
+  await writeJsonFile(GROUPS_FILE, doc);
+  return code;
+}
+async function postGroupStatus(code, raw) {
+  code = normalizeCode(code);
+  const doc = await readJsonFile(GROUPS_FILE, { groups: {} });
+  pruneGroups(doc);
+  const g = doc.groups[code];
+  if (!g) throw badRequest('Unknown group code.');
+  const memberId = cleanString(raw.memberId, 40) || randomGroupCode();
+  if (!g.members[memberId] && Object.keys(g.members).length >= GROUP_MEMBER_MAX) throw badRequest('Group is full.');
+  g.members[memberId] = {
+    name: cleanString(raw.name, 40) || 'Member',
+    status: ['safe', 'need_help', 'unknown'].includes(raw.status) ? raw.status : 'unknown',
+    lat: fuzzCoord(raw.lat),
+    lon: fuzzCoord(raw.lon),
+    updatedAt: new Date().toISOString()
+  };
+  await writeJsonFile(GROUPS_FILE, doc);
+  return { code, memberId, members: rosterView(g) };
+}
+async function getGroupRoster(code) {
+  code = normalizeCode(code);
+  const doc = await readJsonFile(GROUPS_FILE, { groups: {} });
+  const g = doc.groups[code];
+  return g ? { code, members: rosterView(g) } : null;
+}
+
 function requestFingerprint(req) {
   const ip = req.socket.remoteAddress || 'unknown';
   const ua = req.headers['user-agent'] || '';
@@ -1590,6 +1725,38 @@ const server = http.createServer(async (req, res) => {
       const ping = setInterval(() => { try { res.write(': ping\n\n'); } catch { /* gone */ } }, 25_000);
       req.on('close', () => { clearInterval(ping); sseClients.delete(client); });
       return;
+    }
+    if (url.pathname === '/api/places') {
+      const lat = Number(url.searchParams.get('lat'));
+      const lon = Number(url.searchParams.get('lon'));
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return json(res, 400, { ok: false, error: 'lat and lon are required' });
+      const kind = url.searchParams.get('kind') || 'shelter';
+      try {
+        const places = await fetchPlaces(kind, lat, lon);
+        return json(res, 200, {
+          ok: true, kind, count: places.length, places,
+          disclaimer: 'Locations are from OpenStreetMap and may be incomplete or inaccurate. Follow official civil-defense instructions first.'
+        });
+      } catch (error) {
+        return json(res, 200, { ok: false, error: error.message, places: [] });
+      }
+    }
+    if (url.pathname === '/api/group' && req.method === 'POST') {
+      return json(res, 200, { ok: true, code: await createGroup() });
+    }
+    {
+      const m = url.pathname.match(/^\/api\/group\/([A-Za-z0-9]{4,8})\/(status|roster)$/);
+      if (m) {
+        if (m[2] === 'status' && req.method === 'POST') {
+          checkConfirmationRateLimit(req);
+          return json(res, 200, { ok: true, ...(await postGroupStatus(m[1], await readBodyJson(req))) });
+        }
+        if (m[2] === 'roster') {
+          const roster = await getGroupRoster(m[1]);
+          if (!roster) return json(res, 404, { ok: false, error: 'Unknown group code' });
+          return json(res, 200, { ok: true, ...roster });
+        }
+      }
     }
     return serveStatic(req, res);
   } catch (error) {

@@ -1,0 +1,25 @@
+# One-click deploy to Render (https://render.com) for a permanent, stable URL.
+# In Render: New → Blueprint → connect the joshphoenix1/DroneWatch repo.
+# It reads this file, then prompt-fills BASIC_AUTH_PASS (kept secret).
+# Free web services give a permanent https://<name>.onrender.com URL; they
+# sleep after ~15 min idle and cold-start on the next request (URL never changes).
+# For always-on, switch plan to "starter" or use Fly.io (see Dockerfile).
+services:
+  - type: web
+    name: dronewatch
+    runtime: node
+    plan: free
+    region: frankfurt
+    buildCommand: npm install
+    startCommand: node server.mjs
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: BASIC_AUTH_USER
+        value: admin
+      - key: BASIC_AUTH_PASS
+        sync: false   # set this secret in the Render dashboard
+      - key: BASIC_AUTH_REALM
+        value: DroneWatch

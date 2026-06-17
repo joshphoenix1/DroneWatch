@@ -40,6 +40,34 @@
   }
   .sr-only{position:absolute!important;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
     clip:rect(0,0,0,0);white-space:nowrap;border:0}
+  /* life-safety tab */
+  .safetyActions{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
+  .sosBtn{flex:1;min-width:150px;min-height:44px;background:rgba(255,77,77,.16);border:1px solid var(--red);
+    color:#ffd9d9;font-weight:600;letter-spacing:.06em;cursor:pointer;padding:10px}
+  .sosBtn:hover{background:rgba(255,77,77,.30)}
+  .safeBtn{flex:1;min-width:120px;min-height:44px;background:rgba(125,255,154,.14);border:1px solid var(--green-dim);
+    color:#d6ffe0;font-weight:600;letter-spacing:.06em;cursor:pointer;padding:10px}
+  .safeBtn:hover{background:rgba(125,255,154,.26)}
+  .telLink{display:inline-block;margin-top:6px;color:var(--amber);font-size:11px}
+  .safetyStatus{margin-top:8px;font-size:11px;color:#9da8b4;min-height:14px}
+  .placeBtns{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}
+  .placeBtn{min-height:36px;background:rgba(255,180,84,.1);border:1px solid var(--line);color:var(--amber);
+    cursor:pointer;padding:6px 10px;font-size:11px}
+  .placeBtn:hover{background:rgba(255,180,84,.2)}
+  .placesList{margin-top:6px}
+  .placeItem{display:flex;justify-content:space-between;gap:8px;padding:6px 0;
+    border-bottom:1px solid rgba(255,255,255,.06);font-size:11px}
+  .placeItem a{color:var(--amber);text-decoration:none}
+  .placeDist{color:#9da8b4;white-space:nowrap}
+  .groupShare{font-size:11px;margin-bottom:6px;color:#9da8b4;word-break:break-all}
+  .groupShare b{color:var(--green);letter-spacing:.16em;font-size:14px}
+  .groupRoster{margin:8px 0}
+  .rosterItem{display:flex;justify-content:space-between;gap:8px;padding:4px 0;font-size:11px;
+    border-bottom:1px solid rgba(255,255,255,.06)}
+  .rosterItem .st{font-weight:600}
+  .st-safe{color:var(--green)} .st-need_help{color:var(--red)} .st-unknown{color:#9da8b4}
+  .muted{color:#72808f;font-size:11px}
+  #groupJoinCode{text-transform:uppercase;width:90px}
   #c{position:fixed;inset:0;transition:filter .12s}
   #c.glitchy{filter:saturate(1.35) contrast(1.18) brightness(1.06) hue-rotate(3deg)}
   #globalMap{position:fixed;inset:0;z-index:7;background:#07111c;overflow:hidden}
@@ -426,6 +454,7 @@
   <div id="threatTabs">
     <button type="button" class="active" data-tab="alerts">ALERTS</button>
     <button type="button" data-tab="guide">GUIDE</button>
+    <button type="button" data-tab="safety">SAFETY</button>
     <button type="button" data-tab="report">REPORT</button>
     <button type="button" data-tab="signup">SIGN UP</button>
     <button type="button" data-tab="plans">PLANS</button>
@@ -463,6 +492,47 @@
       <h4>MAKE IT WORK IN REAL LIFE</h4>
       <p>Keep official civil-defense alerts enabled. Add verified local report sources. Test delivery weekly. Do not rely on one feed, one server, or one network.</p>
       <p>The current 3D basemap is the Lebanon prototype view. Region switching changes alert feeds and filtering; future map tiles should reload per region.</p>
+    </div>
+  </section>
+  <section class="dashTab" id="tab-safety">
+    <div class="guideBlock danger">
+      <h4>EMERGENCY</h4>
+      <p>If you are in immediate danger, contact local emergency services first. These tools assist — they do not replace official civil-defense instructions.</p>
+      <div class="safetyActions">
+        <button type="button" id="sosBtn" class="sosBtn">● SOS — I NEED HELP</button>
+        <button type="button" id="safeBtn" class="safeBtn">✓ I'M SAFE</button>
+      </div>
+      <a id="emergencyTel" href="tel:112" class="telLink">Call local emergency line</a>
+      <div id="safetyStatus" class="safetyStatus"></div>
+    </div>
+    <div class="guideBlock">
+      <h4>NEAREST SAFE PLACES</h4>
+      <p>Approximate locations from OpenStreetMap — may be incomplete or out of date. Verify and follow official instructions. Uses your device location only on this device.</p>
+      <div class="placeBtns">
+        <button type="button" class="placeBtn" data-kind="shelter">🛡 Shelters</button>
+        <button type="button" class="placeBtn" data-kind="hospital">✚ Hospitals</button>
+        <button type="button" class="placeBtn" data-kind="pharmacy">+ Pharmacies</button>
+      </div>
+      <div id="placesList" class="placesList"></div>
+    </div>
+    <div class="guideBlock safe">
+      <h4>FAMILY CHECK-IN</h4>
+      <p>Create a private circle and share the code so people can mark themselves safe. Convenience only — not an authenticated locator. Never move toward danger to check on someone.</p>
+      <div id="groupSetup">
+        <button type="button" id="groupCreateBtn">Create circle</button>
+        <span class="muted">or join code:</span>
+        <input id="groupJoinCode" placeholder="CODE" maxlength="8" autocomplete="off">
+        <button type="button" id="groupJoinBtn">Join</button>
+      </div>
+      <div id="groupActive" hidden>
+        <div id="groupShare" class="groupShare"></div>
+        <label>YOUR NAME (what your circle sees)
+          <input id="groupName" placeholder="e.g. Sam" maxlength="40" autocomplete="off">
+        </label>
+        <div id="groupRoster" class="groupRoster"></div>
+        <button type="button" id="groupLeaveBtn" class="muted">Leave circle</button>
+      </div>
+      <div id="groupStatus" class="safetyStatus"></div>
     </div>
   </section>
   <section class="dashTab" id="tab-report">
@@ -582,6 +652,7 @@
   <section class="dashTab" id="tab-changes">
     <div class="guideBlock">
       <h4>CHANGELOG</h4>
+      <div class="changeItem"><span class="date">1.2</span><span>Life-safety tools: SOS and "I'm safe" family check-in via private circle codes (shareable link, coordinates fuzzed for privacy), plus a nearest shelter / hospital / pharmacy locator using OpenStreetMap (no key). Added one-click deploy configs (Render blueprint + Dockerfile) for a permanent URL.</span></div>
       <div class="changeItem"><span class="date">1.1</span><span>Accessibility: screen-reader live-region announcements for new severe/extreme alerts (role=alert), reduced-motion support that disables the flashing FPV/glitch effects, and best-effort vibration on new alerts.</span></div>
       <div class="changeItem"><span class="date">1.0</span><span>Live data + installable app: real no-key OSINT/hazard feeds (USGS earthquakes, NASA EONET, regional conflict-news RSS), real-time push via Server-Sent Events with a LIVE indicator, and a PWA (installable, offline shell, last-known alerts cached). Forced IPv4 egress so feeds stay reliable.</span></div>
       <div class="changeItem"><span class="date">0.9</span><span>Added resource guards so long-running servers stay bounded: capped the in-memory notify dedupe set, rotate the alert outbox at 5 MB, and sweep idle rate-limit buckets.</span></div>
@@ -2196,6 +2267,7 @@ function selectRegion(regionId){
   renderThreatPanel();
   fetchThreatFeed();
   startThreatStream();
+  if(typeof syncEmergencyTel==='function') syncEmergencyTel();
 }
 
 function initDashTabs(){
@@ -2556,6 +2628,111 @@ startThreatStream();
 if('serviceWorker' in navigator){
   window.addEventListener('load',()=>{ navigator.serviceWorker.register('/sw.js').catch(()=>{}); });
 }
+
+/* ---- life-safety tools: SOS, "I'm safe" check-in, nearest places ---- */
+const EMERGENCY_NUMBERS={lebanon:'112','east-med':'112','israel-palestine':'101',syria:'112',jordan:'911',cyprus:'112',ukraine:'112'};
+let groupRosterTimer=null;
+function htmlEsc(s){ return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function safetyMemberId(){
+  let id=localStorage.getItem('dronewatch.memberId');
+  if(!id){ id=(window.crypto&&crypto.randomUUID)?crypto.randomUUID():'m'+Date.now()+Math.random().toString(36).slice(2); localStorage.setItem('dronewatch.memberId',id); }
+  return id;
+}
+function currentGroup(){ return localStorage.getItem('dronewatch.group')||''; }
+function setMsg(id,msg,kind){ const el=$(id); if(!el) return; el.textContent=msg||''; el.style.color=kind==='err'?'var(--red)':kind==='ok'?'var(--green)':'#9da8b4'; }
+function getPosition(){
+  return new Promise((resolve,reject)=>{
+    if(!navigator.geolocation) return reject(new Error('Location not available on this device'));
+    navigator.geolocation.getCurrentPosition(
+      p=>resolve({lat:p.coords.latitude,lon:p.coords.longitude}),
+      ()=>reject(new Error('Location permission denied or unavailable')),
+      {enableHighAccuracy:true,timeout:10000,maximumAge:60000});
+  });
+}
+function syncEmergencyTel(){
+  const n=EMERGENCY_NUMBERS[regionState.selectedId]||'112'; const a=$('emergencyTel');
+  if(a){ a.href='tel:'+n; a.textContent='Call local emergency line ('+n+')'; }
+}
+async function postStatus(status){
+  let coords={};
+  try{ coords=await getPosition(); }catch(e){ /* location is optional */ }
+  const code=currentGroup();
+  if(code){
+    try{
+      const body={memberId:safetyMemberId(),name:(localStorage.getItem('dronewatch.name')||$('groupName')?.value||'Member'),status,lat:coords.lat,lon:coords.lon};
+      const r=await fetch('/api/group/'+encodeURIComponent(code)+'/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      const d=await r.json(); if(d.ok) renderRoster(d.members);
+    }catch(e){}
+  }
+  return {coords,inGroup:!!code};
+}
+function joinGroup(code){
+  code=String(code).toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,8); if(!code) return;
+  localStorage.setItem('dronewatch.group',code);
+  showGroup(); refreshRoster();
+  if(groupRosterTimer) clearInterval(groupRosterTimer);
+  groupRosterTimer=setInterval(refreshRoster,15000);
+}
+function showGroup(){
+  const code=currentGroup(), setup=$('groupSetup'), active=$('groupActive'), share=$('groupShare');
+  if(!setup||!active) return;
+  if(code){ setup.hidden=true; active.hidden=false;
+    if(share) share.innerHTML='Circle code: <b>'+htmlEsc(code)+'</b><br><span class="muted">Share link: '+htmlEsc(location.origin+'/?g='+code)+'</span>';
+  }else{ setup.hidden=false; active.hidden=true; }
+}
+async function refreshRoster(){
+  const code=currentGroup(); if(!code) return;
+  try{ const r=await fetch('/api/group/'+encodeURIComponent(code)+'/roster'); const d=await r.json(); if(d.ok) renderRoster(d.members); }catch(e){}
+}
+function renderRoster(members){
+  const el=$('groupRoster'); if(!el) return;
+  if(!members||!members.length){ el.innerHTML='<div class="muted">No check-ins yet. Share the code with your circle.</div>'; return; }
+  el.innerHTML=members.map(m=>'<div class="rosterItem"><span>'+htmlEsc(m.name||'Member')+'</span><span class="st st-'+(m.status||'unknown')+'">'+(m.status||'unknown').replace('_',' ').toUpperCase()+'</span></div>').join('');
+}
+function initSafety(){
+  syncEmergencyTel();
+  const sos=$('sosBtn'), safe=$('safeBtn');
+  if(sos) sos.addEventListener('click',async()=>{
+    setMsg('safetyStatus','Sharing your SOS…');
+    if('vibrate' in navigator){ try{navigator.vibrate([300,120,300]);}catch(_){} }
+    const n=EMERGENCY_NUMBERS[regionState.selectedId]||'112';
+    await postStatus('need_help');
+    setMsg('safetyStatus','SOS shared with your circle (if joined). Tap the emergency line to call '+n+'.','ok');
+    location.href='tel:'+n;
+  });
+  if(safe) safe.addEventListener('click',async()=>{
+    setMsg('safetyStatus','Marking you safe…');
+    const r=await postStatus('safe');
+    setMsg('safetyStatus',r.inGroup?'You are marked SAFE in your circle.':'Join or create a circle to share that you are safe.',r.inGroup?'ok':'err');
+  });
+  document.querySelectorAll('.placeBtn').forEach(btn=>btn.addEventListener('click',async()=>{
+    const kind=btn.dataset.kind, list=$('placesList');
+    if(list) list.innerHTML='<div class="muted">Locating you…</div>';
+    try{
+      const pos=await getPosition();
+      const r=await fetch('/api/places?kind='+encodeURIComponent(kind)+'&lat='+pos.lat+'&lon='+pos.lon);
+      const d=await r.json(); if(!list) return;
+      if(!d.places||!d.places.length){ list.innerHTML='<div class="muted">No '+htmlEsc(kind)+'s found nearby in OpenStreetMap. Follow official guidance.</div>'; return; }
+      list.innerHTML=d.places.map(p=>'<div class="placeItem"><a href="https://www.openstreetmap.org/?mlat='+p.lat+'&mlon='+p.lon+'#map=17/'+p.lat+'/'+p.lon+'" target="_blank" rel="noopener">'+htmlEsc(p.name)+'</a><span class="placeDist">'+p.distanceKm+' km '+p.compass+'</span></div>').join('')
+        +'<div class="muted" style="margin-top:6px">Approximate — verify before moving.</div>';
+    }catch(e){ if(list) list.innerHTML='<div class="muted">'+htmlEsc(e.message)+'</div>'; }
+  }));
+  const nameInput=$('groupName');
+  if(nameInput){ nameInput.value=localStorage.getItem('dronewatch.name')||''; nameInput.addEventListener('change',()=>localStorage.setItem('dronewatch.name',nameInput.value.trim())); }
+  const createBtn=$('groupCreateBtn');
+  if(createBtn) createBtn.addEventListener('click',async()=>{
+    setMsg('groupStatus','Creating circle…');
+    try{ const r=await fetch('/api/group',{method:'POST'}); const d=await r.json(); if(d.ok){ setMsg('groupStatus',''); joinGroup(d.code); } else setMsg('groupStatus','Could not create circle.','err'); }
+    catch(e){ setMsg('groupStatus','Could not create circle.','err'); }
+  });
+  const joinBtn=$('groupJoinBtn');
+  if(joinBtn) joinBtn.addEventListener('click',()=>{ const c=($('groupJoinCode')?.value||'').trim(); if(c){ setMsg('groupStatus',''); joinGroup(c); } else setMsg('groupStatus','Enter a circle code to join.','err'); });
+  const leaveBtn=$('groupLeaveBtn');
+  if(leaveBtn) leaveBtn.addEventListener('click',()=>{ localStorage.removeItem('dronewatch.group'); if(groupRosterTimer){clearInterval(groupRosterTimer);groupRosterTimer=null;} showGroup(); });
+  const g=new URLSearchParams(location.search).get('g'); if(g) joinGroup(g);
+  showGroup();
+}
+initSafety();
 
 /* =============== day/night application =============== */
 const C_FOG_N=new THREE.Color(0x04070d), C_FOG_D=new THREE.Color(0x9fb2c2);
