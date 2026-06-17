@@ -68,6 +68,17 @@
   .st-safe{color:var(--green)} .st-need_help{color:var(--red)} .st-unknown{color:#9da8b4}
   .muted{color:#72808f;font-size:11px}
   #groupJoinCode{text-transform:uppercase;width:90px}
+  /* RESULTS overview */
+  .resGrid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px}
+  .resCard{border:1px solid var(--line);background:rgba(5,8,12,.45);padding:10px}
+  .resCard .resVal{font-family:'Big Shoulders Display','IBM Plex Mono',sans-serif;font-size:24px;font-weight:800;color:var(--amber);line-height:1}
+  .resCard.crit .resVal{color:var(--red)} .resCard.ok .resVal{color:var(--green)}
+  .resCard .resLbl{font-size:10px;letter-spacing:.12em;color:#9da8b4;margin-top:4px}
+  .resCard .resSub{font-size:10px;color:#72808f;margin-top:3px}
+  .resSrcHead{font-size:10px;letter-spacing:.2em;color:#5d6873;border-bottom:1px solid rgba(255,255,255,.08);padding-bottom:5px;margin-bottom:5px}
+  .resRow{display:flex;align-items:center;gap:8px;padding:4px 0;font-size:11px;border-bottom:1px solid rgba(255,255,255,.05)}
+  .resRow .ok{color:var(--green)} .resRow .bad{color:#72808f}
+  .resRow .rn{flex:1;color:#cfd6dd} .resRow .rc{color:#8d98a5;white-space:nowrap}
   /* live airspace (ADS-B) */
   .acPin{position:relative;font-size:13px;line-height:1;text-align:center;will-change:transform}
   .acPin.normal{color:#ffb454}
@@ -533,7 +544,8 @@
     <div id="regionNote">Lebanon is the default region.</div>
   </div>
   <div id="threatTabs">
-    <button type="button" class="active" data-tab="alerts">ALERTS</button>
+    <button type="button" class="active" data-tab="results">RESULTS</button>
+    <button type="button" data-tab="alerts">ALERTS</button>
     <button type="button" data-tab="airspace">AIRSPACE</button>
     <button type="button" data-tab="guide">GUIDE</button>
     <button type="button" data-tab="safety">SAFETY</button>
@@ -542,7 +554,10 @@
     <button type="button" data-tab="plans">PLANS</button>
     <button type="button" data-tab="changes">CHANGELOG</button>
   </div>
-  <section class="dashTab active" id="tab-alerts">
+  <section class="dashTab active" id="tab-results">
+    <div id="resultsBody"><div class="muted">Fusing live sources…</div></div>
+  </section>
+  <section class="dashTab" id="tab-alerts">
     <div id="threatSummary"><span>CONNECTING TO SOURCES</span><span class="meta">--</span></div>
     <div id="threatList"></div>
     <div id="sourceHealth"></div>
@@ -747,6 +762,7 @@
   <section class="dashTab" id="tab-changes">
     <div class="guideBlock">
       <h4>CHANGELOG</h4>
+      <div class="changeItem"><span class="date">2.2</span><span>RESULTS tab (now the default view): one-glance live fusion of everything — drone threat status, live aircraft (mil/UAV/low-slow), active alerts, sources online, and a per-source live feed status.</span></div>
       <div class="changeItem"><span class="date">2.0</span><span>DRONE THREAT NOW: location-aware hero that fuses every drone signal near you (ADS-B UAV / low-slow + CAP/OSINT drone & missile alerts) into one glance — CLEAR / WATCH / TAKE COVER — with the exact survival action, nearest contact, vibration + screen-reader alert on take-cover, and an honest coverage note.</span></div>
       <div class="changeItem"><span class="date">1.6</span><span>Graphics + cinematic: pulsing severe/extreme threat pins, smoother tab/panel transitions, and a CINEMATIC TOUR mode that auto-flies the camera between live aircraft and threats.</span></div>
       <div class="changeItem"><span class="date">1.5</span><span>Drone-source fusion: ADS-B UAV emitter detection + low/slow heuristics (purple contacts), and a fused DRONE WATCH readout combining ADS-B UAVs, low/slow tracks, CAP/OSINT drone alerts, and crowd reports.</span></div>
@@ -2573,6 +2589,7 @@ function applyThreatPayload(payload){
   drawGlobalMap();
   renderThreatPanel();
   announceAlerts();
+  if(typeof renderResults==='function') renderResults();
 }
 function syncThreatSprites(){
   const active=new Set();
@@ -2952,6 +2969,7 @@ async function fetchAircraftLive(){
     const d=await r.json();
     airState.summary=d.summary||null; airState.error=d.ok?null:(d.error||'unavailable');
     syncAircraft(d.aircraft||[]); renderAirspace(); updateAirspaceLegend();
+    if(typeof renderResults==='function') renderResults();
   }catch(e){ airState.error=e.message; renderAirspace(); updateAirspaceLegend(); }
 }
 function startAircraftLive(){
@@ -3048,6 +3066,8 @@ function renderDroneNow(d){
     }
   }
   dnState.lastStatus=d.status;
+  dnState.lastData=d;
+  if(typeof renderResults==='function') renderResults();
 }
 function placeUserOnMap(lat,lon){
   if(!globalMap.ready||!window.L) return;
@@ -3065,6 +3085,26 @@ function showTakeover(d){
     +'<button id="toDismiss">I AM IN COVER</button></div>';
   el.classList.add('show');
   const b=$('toDismiss'); if(b) b.onclick=()=>el.classList.remove('show');
+}
+function renderResults(){
+  const el=$('resultsBody'); if(!el) return;
+  const p=threatState.payload, s=(p&&p.summary)||null, sources=(p&&p.sources)||[];
+  const air=airState.summary||{}, dn=dnState.lastData;
+  const onlineN=sources.filter(x=>x.ok).length;
+  const dnLabel=dn?(dn.status==='take-cover'?'TAKE COVER':dn.status==='watch'?'WATCH':'CLEAR'):'—';
+  const dnCls=dn?(dn.status==='take-cover'?'crit':dn.status==='watch'?'':'ok'):'';
+  const card=(cls,val,lbl,sub)=>'<div class="resCard '+(cls||'')+'"><div class="resVal">'+val+'</div><div class="resLbl">'+lbl+'</div>'+(sub?'<div class="resSub">'+sub+'</div>':'')+'</div>';
+  let html='<div class="resGrid">';
+  html+=card(dnCls,dnLabel,'DRONE THREAT',dn&&dn.nearest?('nearest '+dn.nearest.distanceKm+'km '+dn.nearest.compass):(dn?'no signals ≤30km':''));
+  html+=card('',(air.total!=null?air.total:'—'),'AIRCRAFT LIVE',((air.military||0)+' mil · '+(air.drones||0)+' UAV · '+(air.lowSlow||0)+' low/slow'));
+  html+=card((s&&s.criticalEvents?'crit':''),(s?s.activeEvents:'—'),'ACTIVE ALERTS',(s?(s.criticalEvents+' critical'):''));
+  html+=card('',(sources.length?onlineN+'/'+sources.length:'—'),'SOURCES ONLINE',(s?((s.publicReportsPending||0)+' reports pending'):''));
+  html+='</div>';
+  html+='<div class="resSrcHead">LIVE SOURCES</div>';
+  if(sources.length){
+    html+=sources.map(x=>'<div class="resRow"><span class="'+(x.ok?'ok':'bad')+'">'+(x.ok?'●':'○')+'</span><span class="rn">'+htmlEsc(x.label||x.id||'source')+'</span><span class="rc">'+(x.ok?(x.count!=null?x.count+' hit'+(x.count===1?'':'s'):'ok'):'offline')+'</span></div>').join('');
+  } else html+='<div class="muted">connecting…</div>';
+  el.innerHTML=html;
 }
 function startDroneNow(){
   if(navigator.geolocation){
