@@ -1,6 +1,6 @@
 /* DroneWatch service worker — offline shell + last-known alerts.
    Bump CACHE_VERSION whenever the shell or this file changes. */
-const CACHE_VERSION = 'dw-v1';
+const CACHE_VERSION = 'dw-v2';
 const SHELL_CACHE = `${CACHE_VERSION}-shell`;
 const RUNTIME_CACHE = `${CACHE_VERSION}-runtime`;
 const DATA_CACHE = `${CACHE_VERSION}-data`;
@@ -24,6 +24,28 @@ self.addEventListener('activate', (event) => {
       ))
       .then(() => self.clients.claim())
   );
+});
+
+// Web Push: show the alert even when the app/tab is closed.
+self.addEventListener('push', (event) => {
+  let data = {};
+  try { data = event.data ? event.data.json() : {}; } catch (_) { data = { title: 'DroneWatch alert', body: event.data ? event.data.text() : '' }; }
+  const title = data.title || 'DroneWatch alert';
+  event.waitUntil(self.registration.showNotification(title, {
+    body: data.body || '',
+    tag: data.type ? 'dw-' + data.type : 'dw-alert',
+    renotify: true,
+    requireInteraction: data.severity === 'extreme',
+    data: { url: data.url || '/' }
+  }));
+});
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const url = (event.notification.data && event.notification.data.url) || '/';
+  event.waitUntil(clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
+    for (const c of list) { if ('focus' in c) { c.navigate(url); return c.focus(); } }
+    return clients.openWindow(url);
+  }));
 });
 
 self.addEventListener('fetch', (event) => {

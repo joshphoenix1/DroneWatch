@@ -8,6 +8,7 @@
     "start:demo": "MVP_DEMO=1 node server.mjs"
   },
   "dependencies": {
-    "fast-xml-parser": "^5.9.1"
+    "fast-xml-parser": "^5.9.1",
+    "web-push": "^3.6.7"
   }
 }

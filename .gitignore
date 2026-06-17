@@ -5,6 +5,7 @@ monetization-leads.json
 public-reports.json
 notification-state.json
 groups.json
+push-subscribers.json
 .DS_Store
 .env
 .env.local

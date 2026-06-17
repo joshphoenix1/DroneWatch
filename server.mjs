@@ -7,6 +7,7 @@ import { createHash, timingSafeEqual, randomBytes } from 'node:crypto';
 import dns from 'node:dns';
 import net from 'node:net';
 import { XMLParser } from 'fast-xml-parser';
+import webpush from 'web-push';
 
 // IPv4-only / broken-IPv6 networks make undici's happy-eyeballs hang (ETIMEDOUT)
 // on hosts that publish AAAA records (e.g. USGS via CloudFront). Force IPv4 so
@@ -133,6 +134,15 @@ const OSINT_JSON_FEEDS = splitEnv(process.env.OSINT_JSON_FEEDS);
 const NOTIFY_WEBHOOK_URL = process.env.NOTIFY_WEBHOOK_URL || '';
 // Real, no-API-key hazard feeds (USGS earthquakes + NASA EONET). On by default.
 const ENABLE_HAZARD_FEEDS = process.env.DISABLE_HAZARD_FEEDS !== '1';
+// Web Push (VAPID) — enabled when keys are present in the environment / .env.
+const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || '';
+const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || '';
+const PUSH_ENABLED = Boolean(VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY);
+const PUSH_SUBSCRIBERS_FILE = path.join(__dirname, 'push-subscribers.json');
+if (PUSH_ENABLED) {
+  try { webpush.setVapidDetails(process.env.VAPID_SUBJECT || 'mailto:admin@example.com', VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY); }
+  catch (e) { console.warn('VAPID setup failed:', e.message); }
+}
 // Regional conflict-news OSINT (no key). On by default; capped at moderate severity.
 const ENABLE_NEWS_FEED = process.env.DISABLE_NEWS_FEED !== '1';
 const NEWS_RSS_FEEDS = splitEnv(process.env.NEWS_RSS_FEEDS).length
@@ -993,6 +1003,76 @@ async function getGroupRoster(code) {
   return g ? { code, members: rosterView(g) } : null;
 }
 
+// --- Web Push (VAPID): wakes a closed device with severe/extreme alerts -------
+function subId(endpoint) { return createHash('sha256').update(String(endpoint)).digest('hex').slice(0, 24); }
+async function readPushSubs() { return await readJsonFile(PUSH_SUBSCRIBERS_FILE, { subs: [] }); }
+async function writePushSubs(doc) { await writeJsonFile(PUSH_SUBSCRIBERS_FILE, doc); }
+
+async function savePushSubscription(raw) {
+  if (!PUSH_ENABLED) throw badRequest('Push not configured on this server.');
+  const sub = raw && raw.subscription;
+  if (!sub || !sub.endpoint) throw badRequest('Missing push subscription.');
+  const doc = await readPushSubs();
+  const id = subId(sub.endpoint);
+  const rec = {
+    id, subscription: sub,
+    regionId: regionFromId(raw.regionId).id,
+    threshold: ['extreme', 'severe', 'moderate'].includes(raw.threshold) ? raw.threshold : 'severe',
+    createdAt: new Date().toISOString()
+  };
+  const existing = doc.subs.find(s => s.id === id);
+  if (existing) Object.assign(existing, rec); else doc.subs.push(rec);
+  if (doc.subs.length > 5000) doc.subs = doc.subs.slice(-5000);
+  await writePushSubs(doc);
+  return { id, regionId: rec.regionId, threshold: rec.threshold };
+}
+async function removePushSubscription(endpoint) {
+  const doc = await readPushSubs();
+  const id = subId(endpoint || '');
+  doc.subs = doc.subs.filter(s => s.id !== id);
+  await writePushSubs(doc);
+  return { removed: true };
+}
+async function pushNotifyEvents(events, regionId) {
+  if (!PUSH_ENABLED) return;
+  const doc = await readPushSubs();
+  const subs = doc.subs.filter(s => s.regionId === regionId);
+  if (!subs.length) return;
+  let changed = false;
+  for (const event of events) {
+    if (severityRank(event.severity) < 3) continue; // push only severe/extreme by default
+    for (const s of subs) {
+      if (severityRank(event.severity) < severityRank(s.threshold)) continue;
+      const key = `push:${s.id}:${event.id}:${event.updated || event.effective || ''}`;
+      if (notifiedKeys.has(key)) continue;
+      const payload = JSON.stringify({
+        title: `${String(event.severity || 'ALERT').toUpperCase()}: ${event.title || 'Threat alert'}`,
+        body: event.recommendation || defaultRecommendation(event),
+        severity: event.severity, type: event.type, regionId,
+        url: appUrl('/', { region: regionId })
+      });
+      try {
+        await webpush.sendNotification(s.subscription, payload, { TTL: 600, urgency: 'high' });
+        rememberNotified(key);
+      } catch (err) {
+        if (err && (err.statusCode === 404 || err.statusCode === 410)) { s.__dead = true; changed = true; }
+      }
+    }
+  }
+  if (changed) { doc.subs = doc.subs.filter(s => !s.__dead); await writePushSubs(doc); }
+}
+// Background poller so alerts fire even when no browser is open.
+async function pushPoll() {
+  if (!PUSH_ENABLED) return;
+  try {
+    const doc = await readPushSubs();
+    for (const rid of [...new Set(doc.subs.map(s => s.regionId))]) {
+      try { const payload = await threats(rid); await pushNotifyEvents(payload.events || [], rid); } catch { /* skip */ }
+    }
+  } catch { /* skip */ }
+}
+setInterval(pushPoll, 60_000).unref();
+
 // --- Live airspace: ADS-B aircraft (free, no key, multi-source fallback) ------
 const aircraftCache = new Map(); // regionId -> { until, data }
 const AIRCRAFT_TTL_MS = 8000;
@@ -1652,6 +1732,7 @@ async function buildThreatPayload(region) {
     .sort((a, b) => severityRank(b.severity) - severityRank(a.severity)
       || new Date(b.updated || 0) - new Date(a.updated || 0));
   const notifications = await queueNotifications(events);
+  pushNotifyEvents(events, region.id).catch(() => {}); // fire-and-forget web push
   const reportStatus = await publicReportStatus(region.id);
 
   return {
@@ -1820,6 +1901,16 @@ const server = http.createServer(async (req, res) => {
       } catch (error) {
         return json(res, 200, { ok: false, error: error.message, places: [] });
       }
+    }
+    if (url.pathname === '/api/push/key') {
+      return json(res, 200, { ok: true, enabled: PUSH_ENABLED, key: VAPID_PUBLIC_KEY });
+    }
+    if (url.pathname === '/api/push/subscribe' && req.method === 'POST') {
+      return json(res, 200, { ok: true, ...(await savePushSubscription(await readBodyJson(req))) });
+    }
+    if (url.pathname === '/api/push/unsubscribe' && req.method === 'POST') {
+      const b = await readBodyJson(req);
+      return json(res, 200, { ok: true, ...(await removePushSubscription(b.endpoint || (b.subscription && b.subscription.endpoint))) });
     }
     if (url.pathname === '/api/aircraft') {
       try {
