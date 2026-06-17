@@ -107,6 +107,24 @@
     font-size:10px;letter-spacing:.14em;padding:7px 11px;backdrop-filter:blur(5px)}
   #tourBtn:hover{background:rgba(255,180,84,.16)}
   #tourBtn.on{color:var(--green);border-color:var(--green-dim);box-shadow:0 0 14px rgba(125,255,154,.3)}
+  /* DRONE THREAT NOW — the hero answer */
+  #droneNow{position:fixed;top:50px;left:50%;transform:translateX(-50%);z-index:30;
+    width:min(580px,calc(100vw - 20px));pointer-events:auto;border:1px solid var(--line);
+    background:rgba(5,8,13,.85);backdrop-filter:blur(9px);padding:13px 16px;text-align:center;display:none}
+  #droneNow.show{display:block}
+  #droneNow .dnStatus{font-family:'Big Shoulders Display','IBM Plex Mono',sans-serif;font-size:27px;font-weight:800;
+    letter-spacing:.05em;line-height:1}
+  #droneNow .dnHead{font-size:12px;color:#cfd6dd;margin-top:5px;letter-spacing:.05em}
+  #droneNow .dnAction{font-size:12px;margin-top:8px;line-height:1.5;color:#fff}
+  #droneNow .dnMeta{font-size:10px;color:#8d98a5;margin-top:7px;letter-spacing:.05em}
+  #droneNow.clear{border-color:var(--green-dim);box-shadow:0 0 28px rgba(125,255,154,.14)}
+  #droneNow.clear .dnStatus{color:var(--green)}
+  #droneNow.watch{border-color:var(--amber);box-shadow:0 0 30px rgba(255,180,84,.2)}
+  #droneNow.watch .dnStatus{color:var(--amber)}
+  #droneNow.takecover{border-color:var(--red);animation:dnPulse 1.1s ease-in-out infinite}
+  #droneNow.takecover .dnStatus{color:var(--red)}
+  @keyframes dnPulse{0%,100%{box-shadow:0 0 22px rgba(255,77,77,.32)}50%{box-shadow:0 0 48px rgba(255,77,77,.66)}}
+  @media (max-width:720px){#droneNow{top:46px;width:calc(100vw - 16px)}#droneNow .dnStatus{font-size:22px}}
   #c{position:fixed;inset:0;transition:filter .12s}
   #c.glitchy{filter:saturate(1.35) contrast(1.18) brightness(1.06) hue-rotate(3deg)}
   #globalMap{position:fixed;inset:0;z-index:7;background:#07111c;overflow:hidden}
@@ -478,6 +496,7 @@
   <span><b>DRONEWATCH</b> MVP // PUBLIC ALERT FUSION — CAP + VETTED OSINT</span>
   <span id="clockstamp">BEIRUT, LB · 33.8938°N 35.5018°E · --:--:--</span>
 </div>
+<div id="droneNow" role="status" aria-live="polite"></div>
 <div class="chrome" id="hint">
   <kbd>REGION</kbd> SELECT &nbsp;·&nbsp; <kbd>CLICK</kbd> MAP MARKER &nbsp;·&nbsp; <kbd>SIGN UP</kbd> ALERT DELIVERY &nbsp;·&nbsp; <kbd>T</kbd> CLOCK<br>
   <span style="color:#3d4750">PUBLIC-FEED MVP — FOLLOW OFFICIAL CIVIL DEFENSE INSTRUCTIONS FIRST.</span>
@@ -705,6 +724,7 @@
   <section class="dashTab" id="tab-changes">
     <div class="guideBlock">
       <h4>CHANGELOG</h4>
+      <div class="changeItem"><span class="date">2.0</span><span>DRONE THREAT NOW: location-aware hero that fuses every drone signal near you (ADS-B UAV / low-slow + CAP/OSINT drone & missile alerts) into one glance — CLEAR / WATCH / TAKE COVER — with the exact survival action, nearest contact, vibration + screen-reader alert on take-cover, and an honest coverage note.</span></div>
       <div class="changeItem"><span class="date">1.6</span><span>Graphics + cinematic: pulsing severe/extreme threat pins, smoother tab/panel transitions, and a CINEMATIC TOUR mode that auto-flies the camera between live aircraft and threats.</span></div>
       <div class="changeItem"><span class="date">1.5</span><span>Drone-source fusion: ADS-B UAV emitter detection + low/slow heuristics (purple contacts), and a fused DRONE WATCH readout combining ADS-B UAVs, low/slow tracks, CAP/OSINT drone alerts, and crowd reports.</span></div>
       <div class="changeItem"><span class="date">1.4</span><span>World-class notifications: Web Push (VAPID) that wakes a closed device with severe/extreme alerts, deep-linking to the region. Background poller sends even with no tab open; dead subscriptions auto-pruned. Enable from the SIGN UP tab.</span></div>
@@ -2329,6 +2349,7 @@ function selectRegion(regionId){
   if(typeof syncEmergencyTel==='function') syncEmergencyTel();
   if(typeof airState!=='undefined'&&globalMap.aircraft){ globalMap.aircraft.clearLayers(); airState.byHex.clear(); }
   if(typeof startAircraftLive==='function') startAircraftLive();
+  if(typeof fetchThreatNow==='function') fetchThreatNow();
 }
 
 function initDashTabs(){
@@ -2971,6 +2992,45 @@ function toggleTour(){
   const b=document.createElement('button'); b.id='tourBtn'; b.textContent='◎ CINEMATIC TOUR';
   b.addEventListener('click',toggleTour); document.body.appendChild(b);
 })();
+
+/* ===== DRONE THREAT NOW — the hero answer: am I in danger, what do I do ===== */
+const dnState={lat:null,lon:null,timer:null,lastStatus:null};
+async function fetchThreatNow(){
+  try{
+    const q=new URLSearchParams({region:regionState.selectedId||'lebanon'});
+    if(Number.isFinite(dnState.lat)){ q.set('lat',dnState.lat); q.set('lon',dnState.lon); }
+    const d=await (await fetch('/api/threat-now?'+q.toString(),{cache:'no-store'})).json();
+    renderDroneNow(d);
+  }catch(e){}
+}
+function renderDroneNow(d){
+  const el=$('droneNow'); if(!el||!d||!d.ok) return;
+  const cls=d.status==='take-cover'?'takecover':(d.status==='watch'?'watch':'clear');
+  el.className='show '+cls;
+  const label=d.status==='take-cover'?'TAKE COVER':d.status==='watch'?'WATCH':'CLEAR';
+  const near=d.nearest?('Nearest: '+htmlEsc(d.nearest.label)+' · '+d.nearest.distanceKm+' km '+d.nearest.compass):'';
+  const where=Number.isFinite(dnState.lat)?'your location':'region centre';
+  el.innerHTML='<div class="dnStatus">DRONE THREAT: '+label+'</div>'
+    +'<div class="dnHead">'+htmlEsc(d.headline||'')+'</div>'
+    +'<div class="dnAction">'+htmlEsc(d.action||'')+'</div>'
+    +'<div class="dnMeta">'+(near?near+' · ':'')+(d.signalCount||0)+' signal(s) ≤30km · '+where+' · '+htmlEsc(d.coverageNote||'')+'</div>';
+  if(d.status==='take-cover' && dnState.lastStatus!=='take-cover'){
+    if('vibrate' in navigator){ try{navigator.vibrate([300,120,300,120,300]);}catch(_){} }
+    const a=$('a11yAlert'); if(a) a.textContent='Drone threat near you. '+(d.action||'');
+  }
+  dnState.lastStatus=d.status;
+}
+function startDroneNow(){
+  if(navigator.geolocation){
+    navigator.geolocation.getCurrentPosition(
+      p=>{ dnState.lat=p.coords.latitude; dnState.lon=p.coords.longitude; fetchThreatNow(); },
+      ()=>fetchThreatNow(), {enableHighAccuracy:true,timeout:8000,maximumAge:60000});
+  }
+  fetchThreatNow();
+  if(dnState.timer) clearInterval(dnState.timer);
+  dnState.timer=setInterval(fetchThreatNow,12000);
+}
+startDroneNow();
 
 /* =============== day/night application =============== */
 const C_FOG_N=new THREE.Color(0x04070d), C_FOG_D=new THREE.Color(0x9fb2c2);

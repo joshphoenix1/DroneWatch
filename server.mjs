@@ -1161,6 +1161,68 @@ async function fetchAircraft(region) {
   return data;
 }
 
+// --- DRONE THREAT NOW: fuse every drone signal near a point -> status + action -
+async function threatNow(lat, lon, regionId) {
+  const region = regionFromId(regionId);
+  let air = { aircraft: [] };
+  try { air = await fetchAircraft(region); } catch { /* degrade gracefully */ }
+  let payload = { events: [] };
+  try { payload = await threats(region.id); } catch { /* degrade gracefully */ }
+
+  const fromAircraft = (air.aircraft || [])
+    .filter(a => (a.uav || a.lowSlow) && Number.isFinite(a.lat) && Number.isFinite(a.lon))
+    .map(a => ({
+      kind: 'adsb',
+      label: a.callsign || (a.uav ? 'UAV contact' : 'Low/slow contact'),
+      detail: (a.uav ? 'ADS-B UAV' : 'Low & slow aircraft') + (a.altFt != null ? ' · ' + a.altFt + ' ft' : ''),
+      lat: a.lat, lon: a.lon,
+      distanceKm: Math.round(distanceKm(lat, lon, a.lat, a.lon) * 10) / 10,
+      compass: compass(bearingDeg(lat, lon, a.lat, a.lon)),
+      confirmed: !!a.uav,
+      severity: a.uav ? 'severe' : 'moderate'
+    }));
+
+  const fromAlerts = (payload.events || [])
+    .filter(e => ['drone', 'rocket-missile', 'airstrike'].includes(e.type) && Number.isFinite(Number(e.lat)) && Number.isFinite(Number(e.lon)))
+    .map(e => ({
+      kind: 'alert',
+      label: e.title || (e.type + ' alert'),
+      detail: (e.confidence === 'official' ? 'Official alert' : 'Reported') + (e.source ? ' · ' + e.source : ''),
+      lat: Number(e.lat), lon: Number(e.lon),
+      distanceKm: Math.round(distanceKm(lat, lon, Number(e.lat), Number(e.lon)) * 10) / 10,
+      compass: compass(bearingDeg(lat, lon, Number(e.lat), Number(e.lon))),
+      confirmed: e.confidence === 'official',
+      severity: e.severity
+    }));
+
+  const signals = [...fromAlerts, ...fromAircraft].sort((a, b) => a.distanceKm - b.distanceKm);
+  const nearest = signals[0] || null;
+  const officialNear = fromAlerts.some(s => ['extreme', 'severe'].includes(s.severity) && s.distanceKm <= 25);
+  const uavNear = fromAircraft.some(s => s.confirmed && s.distanceKm <= 12);
+  const anyNear = signals.some(s => s.distanceKm <= 30);
+
+  let status = 'clear';
+  let headline = 'No drone threat detected near you';
+  let action = 'Stay aware. You will be alerted automatically if a drone threat appears nearby. Keep notifications on.';
+  if (officialNear || uavNear) {
+    status = 'take-cover';
+    headline = 'Drone threat near you — take cover now';
+    action = 'Get indoors immediately. Move to an interior room, basement or shelter, away from windows, balconies and rooftops. Stay low, away from exterior walls. Follow official civil-defense instructions.';
+  } else if (anyNear) {
+    status = 'watch';
+    headline = 'Possible drone activity nearby';
+    action = 'Move toward shelter now. Stay away from open areas, windows and rooftops. Keep alerts on and be ready to take cover.';
+  }
+
+  return {
+    ok: true, status, headline, action, nearest,
+    signalCount: signals.filter(s => s.distanceKm <= 30).length,
+    signals: signals.slice(0, 8),
+    point: { lat, lon }, region: region.id, checkedAt: new Date().toISOString(),
+    coverageNote: 'Small hostile drones often broadcast no signal and may not be detected. No alert does NOT guarantee safety — trust your senses and official warnings.'
+  };
+}
+
 function requestFingerprint(req) {
   const ip = req.socket.remoteAddress || 'unknown';
   const ua = req.headers['user-agent'] || '';
@@ -1919,6 +1981,15 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/push/unsubscribe' && req.method === 'POST') {
       const b = await readBodyJson(req);
       return json(res, 200, { ok: true, ...(await removePushSubscription(b.endpoint || (b.subscription && b.subscription.endpoint))) });
+    }
+    if (url.pathname === '/api/threat-now') {
+      const qlat = Number(url.searchParams.get('lat'));
+      const qlon = Number(url.searchParams.get('lon'));
+      const r = regionFromId(url.searchParams.get('region'));
+      const lat = Number.isFinite(qlat) ? qlat : r.center.lat;
+      const lon = Number.isFinite(qlon) ? qlon : r.center.lon;
+      try { return json(res, 200, await threatNow(lat, lon, r.id)); }
+      catch (e) { return json(res, 200, { ok: false, error: e.message, status: 'unknown' }); }
     }
     if (url.pathname === '/api/aircraft') {
       try {
