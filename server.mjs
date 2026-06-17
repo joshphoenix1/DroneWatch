@@ -993,6 +993,86 @@ async function getGroupRoster(code) {
   return g ? { code, members: rosterView(g) } : null;
 }
 
+// --- Live airspace: ADS-B aircraft (free, no key, multi-source fallback) ------
+const aircraftCache = new Map(); // regionId -> { until, data }
+const AIRCRAFT_TTL_MS = 8000;
+const INTEREST_RANK = { emergency: 0, military: 1, unidentified: 2, normal: 3 };
+
+function aircraftInterest(a) {
+  const sq = String(a.squawk || '');
+  if (['7500', '7600', '7700'].includes(sq) || (a.emergency && a.emergency !== 'none')) return 'emergency';
+  if ((Number(a.dbFlags) & 1) === 1) return 'military';
+  if (!String(a.flight || '').trim()) return 'unidentified';
+  return 'normal';
+}
+
+async function fetchAircraftRaw(lat, lon, nm) {
+  const sources = [
+    `https://api.adsb.lol/v2/lat/${lat}/lon/${lon}/dist/${nm}`,
+    `https://opendata.adsb.fi/api/v2/lat/${lat}/lon/${lon}/dist/${nm}`,
+    `https://api.airplanes.live/v2/point/${lat}/${lon}/${nm}`
+  ];
+  let lastErr;
+  for (const url of sources) {
+    try {
+      const r = await fetch(url, {
+        headers: { 'User-Agent': 'DroneWatchMVP/0.1 public-alert-fusion' },
+        signal: AbortSignal.timeout(9000)
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const doc = await r.json();
+      return { ac: doc.ac || doc.aircraft || [], source: new URL(url).hostname };
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error('no aircraft source reachable');
+}
+
+async function fetchAircraft(region) {
+  const cached = aircraftCache.get(region.id);
+  if (cached && Date.now() < cached.until) return cached.data;
+  const nm = Math.min(250, Math.max(25, Math.round(region.center.radiusKm / 1.852)));
+  const { ac, source } = await fetchAircraftRaw(region.center.lat, region.center.lon, nm);
+  const aircraft = [];
+  for (const a of ac) {
+    const lat = Number(a.lat), lon = Number(a.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+    const onGround = a.alt_baro === 'ground';
+    aircraft.push({
+      hex: a.hex,
+      callsign: String(a.flight || '').trim() || null,
+      type: a.t || null,
+      lat, lon,
+      altFt: onGround ? 0 : (Number.isFinite(Number(a.alt_baro)) ? Number(a.alt_baro) : null),
+      onGround,
+      groundSpeedKt: Number.isFinite(Number(a.gs)) ? Math.round(Number(a.gs)) : null,
+      track: Number.isFinite(Number(a.track)) ? Math.round(Number(a.track)) : null,
+      squawk: a.squawk || null,
+      category: a.category || null,
+      emergency: (a.emergency && a.emergency !== 'none') ? a.emergency : null,
+      military: (Number(a.dbFlags) & 1) === 1,
+      distanceKm: Number.isFinite(Number(a.dst))
+        ? Math.round(Number(a.dst) * 1.852 * 10) / 10
+        : Math.round(distanceKm(region.center.lat, region.center.lon, lat, lon) * 10) / 10,
+      compass: compass(bearingDeg(region.center.lat, region.center.lon, lat, lon)),
+      interest: aircraftInterest(a)
+    });
+  }
+  aircraft.sort((x, y) => (INTEREST_RANK[x.interest] - INTEREST_RANK[y.interest]) || x.distanceKm - y.distanceKm);
+  const data = {
+    ok: true, source, updatedAt: new Date().toISOString(),
+    summary: {
+      total: aircraft.length,
+      military: aircraft.filter(a => a.military).length,
+      emergency: aircraft.filter(a => a.emergency).length,
+      unidentified: aircraft.filter(a => !a.callsign).length
+    },
+    aircraft: aircraft.slice(0, 80)
+  };
+  aircraftCache.set(region.id, { until: Date.now() + AIRCRAFT_TTL_MS, data });
+  if (aircraftCache.size > 20) aircraftCache.delete(aircraftCache.keys().next().value);
+  return data;
+}
+
 function requestFingerprint(req) {
   const ip = req.socket.remoteAddress || 'unknown';
   const ua = req.headers['user-agent'] || '';
@@ -1739,6 +1819,13 @@ const server = http.createServer(async (req, res) => {
         });
       } catch (error) {
         return json(res, 200, { ok: false, error: error.message, places: [] });
+      }
+    }
+    if (url.pathname === '/api/aircraft') {
+      try {
+        return json(res, 200, await fetchAircraft(regionFromId(url.searchParams.get('region'))));
+      } catch (error) {
+        return json(res, 200, { ok: false, error: error.message, aircraft: [], summary: { total: 0 } });
       }
     }
     if (url.pathname === '/api/group' && req.method === 'POST') {

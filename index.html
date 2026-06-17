@@ -68,6 +68,27 @@
   .st-safe{color:var(--green)} .st-need_help{color:var(--red)} .st-unknown{color:#9da8b4}
   .muted{color:#72808f;font-size:11px}
   #groupJoinCode{text-transform:uppercase;width:90px}
+  /* live airspace (ADS-B) */
+  .acPin{position:relative;font-size:13px;line-height:1;text-align:center;will-change:transform}
+  .acPin.normal{color:#ffb454}
+  .acPin.unidentified{color:#eaf0f6}
+  .acPin.military{color:#ff4d4d}
+  .acPin.emergency{color:#ff2424}
+  .acPin.military,.acPin.emergency{filter:drop-shadow(0 0 5px currentColor)}
+  .acglide .ac-icon{transition:transform 1s linear}
+  .acPulse{position:absolute;left:50%;top:50%;width:24px;height:24px;margin:-12px 0 0 -12px;border-radius:50%;
+    border:1.5px solid currentColor;opacity:0;animation:acping 1.6s ease-out infinite;pointer-events:none}
+  @keyframes acping{0%{transform:scale(.4);opacity:.75}100%{transform:scale(2.3);opacity:0}}
+  .airspaceSummary{font-size:11px;color:#9da8b4;letter-spacing:.06em;margin-bottom:8px;
+    border-bottom:1px solid rgba(255,255,255,.08);padding-bottom:6px}
+  .airspaceSummary b{color:var(--amber)} .airspaceSummary .mil{color:#ff4d4d} .airspaceSummary .emg{color:#ff2424}
+  .airspaceList{max-height:46vh;overflow:auto}
+  .acRow{display:flex;justify-content:space-between;gap:8px;padding:6px 8px;cursor:pointer;
+    border-left:2px solid var(--amber);background:rgba(5,8,12,.4);margin-bottom:3px}
+  .acRow:hover{background:rgba(255,180,84,.1)}
+  .acRow.mil{border-left-color:#ff4d4d} .acRow.emg{border-left-color:#ff2424} .acRow.unid{border-left-color:#eaf0f6}
+  .acRow .acCs{color:#e8edf2;font-size:11px;font-weight:600}
+  .acRow .acMeta{color:#8d98a5;font-size:10px;white-space:nowrap;text-align:right}
   #c{position:fixed;inset:0;transition:filter .12s}
   #c.glitchy{filter:saturate(1.35) contrast(1.18) brightness(1.06) hue-rotate(3deg)}
   #globalMap{position:fixed;inset:0;z-index:7;background:#07111c;overflow:hidden}
@@ -453,6 +474,7 @@
   </div>
   <div id="threatTabs">
     <button type="button" class="active" data-tab="alerts">ALERTS</button>
+    <button type="button" data-tab="airspace">AIRSPACE</button>
     <button type="button" data-tab="guide">GUIDE</button>
     <button type="button" data-tab="safety">SAFETY</button>
     <button type="button" data-tab="report">REPORT</button>
@@ -464,6 +486,13 @@
     <div id="threatSummary"><span>CONNECTING TO SOURCES</span><span class="meta">--</span></div>
     <div id="threatList"></div>
     <div id="sourceHealth"></div>
+  </section>
+  <section class="dashTab" id="tab-airspace">
+    <div id="airspaceSummary" class="airspaceSummary">SCANNING AIRSPACE…</div>
+    <div id="airspaceList" class="airspaceList"></div>
+    <div class="guideBlock" style="margin-top:8px">
+      <p style="color:#72808f;font-size:10px">Live ADS-B traffic within the region radius (adsb.lol / adsb.fi / airplanes.live, no key). Aircraft that don't broadcast ADS-B — including many military and small drones — won't appear. Tap a contact to fly the map to it.</p>
+    </div>
   </section>
   <section class="dashTab" id="tab-guide">
     <div class="guideBlock danger">
@@ -652,6 +681,7 @@
   <section class="dashTab" id="tab-changes">
     <div class="guideBlock">
       <h4>CHANGELOG</h4>
+      <div class="changeItem"><span class="date">1.3</span><span>LIVE AIRSPACE RADAR: real-time ADS-B aircraft from multiple no-key sources (adsb.lol / adsb.fi / airplanes.live) as gliding, heading-rotated map markers with military / emergency / unidentified flagging, a new AIRSPACE tab + always-on readout, click-to-fly-to a contact, and cinematic fly-through camera on region change.</span></div>
       <div class="changeItem"><span class="date">1.2</span><span>Life-safety tools: SOS and "I'm safe" family check-in via private circle codes (shareable link, coordinates fuzzed for privacy), plus a nearest shelter / hospital / pharmacy locator using OpenStreetMap (no key). Added one-click deploy configs (Render blueprint + Dockerfile) for a permanent URL.</span></div>
       <div class="changeItem"><span class="date">1.1</span><span>Accessibility: screen-reader live-region announcements for new severe/extreme alerts (role=alert), reduced-motion support that disables the flashing FPV/glitch effects, and best-effort vibration on new alerts.</span></div>
       <div class="changeItem"><span class="date">1.0</span><span>Live data + installable app: real no-key OSINT/hazard feeds (USGS earthquakes, NASA EONET, regional conflict-news RSS), real-time push via Server-Sent Events with a LIVE indicator, and a PWA (installable, offline shell, last-known alerts cached). Forced IPv4 egress so feeds stay reliable.</span></div>
@@ -2206,7 +2236,9 @@ function drawGlobalMap(){
       .bindPopup(`<b>${sevLabel(e.severity)} · ${e.type||'ALERT'}</b><br>${concise(e.title,90)}<br>${concise(e.recommendation||'',140)}`);
   }
   if(region&&globalMap.lastRegionId!==region.id){
-    globalMap.map.setView([region.center.lat,region.center.lon], region.center.radiusKm>600?5:region.center.radiusKm>350?6:7, {animate:true});
+    const z=region.center.radiusKm>600?5:region.center.radiusKm>350?6:7;
+    if(PERF.reduced) globalMap.map.setView([region.center.lat,region.center.lon],z);
+    else globalMap.map.flyTo([region.center.lat,region.center.lon],z,{animate:true,duration:1.6}); // cinematic fly-through
     globalMap.lastRegionId=region.id;
   }
 }
@@ -2268,6 +2300,8 @@ function selectRegion(regionId){
   fetchThreatFeed();
   startThreatStream();
   if(typeof syncEmergencyTel==='function') syncEmergencyTel();
+  if(typeof airState!=='undefined'&&globalMap.aircraft){ globalMap.aircraft.clearLayers(); airState.byHex.clear(); }
+  if(typeof startAircraftLive==='function') startAircraftLive();
 }
 
 function initDashTabs(){
@@ -2733,6 +2767,119 @@ function initSafety(){
   showGroup();
 }
 initSafety();
+
+/* ---- EPIC: live airspace radar (ADS-B) — gliding aircraft + cinematic camera ---- */
+const airState={byHex:new Map(),summary:null,error:null,poll:null,anim:null,glideBound:false};
+function acIcon(a){
+  const cls=a.interest||'normal';
+  const pulse=(cls==='military'||cls==='emergency')?'<span class="acPulse"></span>':'';
+  return L.divIcon({className:'ac-icon',iconSize:[18,18],iconAnchor:[9,9],
+    html:'<div class="acPin '+cls+'" style="transform:rotate('+(a.track||0)+'deg)">▲'+pulse+'</div>'});
+}
+function ensureAircraftLayer(){
+  if(!globalMap.ready||!window.L) return false;
+  if(!globalMap.aircraft) globalMap.aircraft=L.layerGroup().addTo(globalMap.map);
+  if(!airState.glideBound&&globalMap.map){
+    const on=()=>{ if(!PERF.reduced){ const e=globalMap.map.getContainer(); if(e)e.classList.add('acglide'); } };
+    const off=()=>{ const e=globalMap.map.getContainer(); if(e)e.classList.remove('acglide'); };
+    on(); globalMap.map.on('movestart zoomstart',off); globalMap.map.on('moveend zoomend',on);
+    airState.glideBound=true;
+  }
+  return true;
+}
+function acPopup(a){
+  return '<b>'+htmlEsc(a.callsign||'(no callsign)')+'</b>'+(a.type?' · '+htmlEsc(a.type):'')
+    +'<br>'+(a.onGround?'on ground':(a.altFt!=null?a.altFt.toLocaleString()+' ft':'alt ?'))+(a.groundSpeedKt!=null?' · '+a.groundSpeedKt+' kt':'')
+    +'<br>'+a.distanceKm+' km '+a.compass
+    +(a.military?'<br><b style="color:#ff4d4d">MILITARY</b>':'')
+    +(a.emergency?'<br><b style="color:#ff2424">EMERGENCY '+htmlEsc(a.emergency)+'</b>':'')
+    +(!a.callsign?'<br><b style="color:#eaf0f6">UNIDENTIFIED</b>':'');
+}
+function syncAircraft(list){
+  if(!ensureAircraftLayer()) return;
+  const seen=new Set();
+  for(const a of list){
+    if(!Number.isFinite(a.lat)||!Number.isFinite(a.lon)) continue;
+    seen.add(a.hex);
+    let rec=airState.byHex.get(a.hex);
+    if(!rec){
+      const marker=L.marker([a.lat,a.lon],{icon:acIcon(a)}).addTo(globalMap.aircraft);
+      marker.on('click',()=>focusAircraft(a.hex));
+      rec={data:a,marker,lat:a.lat,lon:a.lon}; airState.byHex.set(a.hex,rec);
+    }else{
+      rec.data=a; rec.lat=a.lat; rec.lon=a.lon;
+      rec.marker.setLatLng([a.lat,a.lon]); rec.marker.setIcon(acIcon(a));
+    }
+    rec.marker.bindPopup(acPopup(a));
+  }
+  for(const [hex,rec] of airState.byHex){
+    if(!seen.has(hex)){ globalMap.aircraft.removeLayer(rec.marker); airState.byHex.delete(hex); }
+  }
+}
+function stepAircraft(){
+  if(!globalMap.aircraft||PERF.reduced||document.hidden) return;
+  for(const rec of airState.byHex.values()){
+    const a=rec.data; if(a.onGround||!a.groundSpeedKt||a.track==null) continue;
+    const dist=a.groundSpeedKt*0.514444; // m per 1s
+    const tr=a.track*Math.PI/180;
+    rec.lat+=(dist*Math.cos(tr))/111320;
+    rec.lon+=(dist*Math.sin(tr))/((111320*Math.cos(rec.lat*Math.PI/180))||1);
+    rec.marker.setLatLng([rec.lat,rec.lon]);
+  }
+}
+const AC_RANK={emergency:0,military:1,unidentified:2,normal:3};
+function renderAirspace(){
+  const sum=$('airspaceSummary'), list=$('airspaceList');
+  if(sum){
+    if(airState.error){ sum.innerHTML='Live ADS-B unavailable.'; }
+    else{ const s=airState.summary||{total:0};
+      sum.innerHTML='<b>'+(s.total||0)+'</b> live contacts'
+        +(s.military?' · <span class="mil">'+s.military+' MIL</span>':'')
+        +(s.emergency?' · <span class="emg">'+s.emergency+' EMG</span>':'')
+        +(s.unidentified?' · '+s.unidentified+' UNID':''); }
+  }
+  if(list){
+    const arr=[...airState.byHex.values()].map(r=>r.data)
+      .sort((x,y)=>(AC_RANK[x.interest]-AC_RANK[y.interest])||x.distanceKm-y.distanceKm).slice(0,40);
+    if(!arr.length){ list.innerHTML='<div class="muted">No ADS-B contacts in range right now.</div>'; }
+    else{
+      list.innerHTML=arr.map(a=>{
+        const c=a.interest==='military'?'mil':a.interest==='emergency'?'emg':a.interest==='unidentified'?'unid':'';
+        return '<div class="acRow '+c+'" data-hex="'+htmlEsc(a.hex)+'"><span class="acCs">'+htmlEsc(a.callsign||a.hex||'—')+'</span>'
+          +'<span class="acMeta">'+htmlEsc(a.type||'')+' '+(a.onGround?'GND':(a.altFt!=null?Math.round(a.altFt/100)+'FL':''))+'<br>'+a.distanceKm+'km '+a.compass+'</span></div>';
+      }).join('');
+      list.querySelectorAll('.acRow').forEach(row=>row.addEventListener('click',()=>focusAircraft(row.dataset.hex)));
+    }
+  }
+}
+function updateAirspaceLegend(){
+  const lg=$('globalLegend'); if(!lg) return;
+  const s=airState.summary, region=selectedRegion();
+  lg.innerHTML='<b>AIRSPACE — '+htmlEsc(region?.label||'Region')+'</b><br>'
+    +(airState.error?'live ADS-B unavailable':((s?s.total:0)+' live aircraft'+(s&&s.military?' · '+s.military+' military':'')+(s&&s.emergency?' · '+s.emergency+' emergency':'')))
+    +'<br><span style="color:#5d6873">live ADS-B + CAP/OSINT fusion</span>';
+}
+function focusAircraft(hex){
+  const rec=airState.byHex.get(hex); if(!rec||!globalMap.map) return;
+  globalMap.map.flyTo([rec.lat,rec.lon],Math.max(globalMap.map.getZoom(),9),{animate:true,duration:1.4});
+  rec.marker.openPopup();
+}
+async function fetchAircraftLive(){
+  try{
+    const rid=regionState.selectedId||'lebanon';
+    const r=await fetch('/api/aircraft?region='+encodeURIComponent(rid),{cache:'no-store'});
+    const d=await r.json();
+    airState.summary=d.summary||null; airState.error=d.ok?null:(d.error||'unavailable');
+    syncAircraft(d.aircraft||[]); renderAirspace(); updateAirspaceLegend();
+  }catch(e){ airState.error=e.message; renderAirspace(); updateAirspaceLegend(); }
+}
+function startAircraftLive(){
+  if(airState.poll) clearInterval(airState.poll);
+  fetchAircraftLive();
+  airState.poll=setInterval(fetchAircraftLive,10000);
+  if(!airState.anim) airState.anim=setInterval(stepAircraft,1000);
+}
+startAircraftLive();
 
 /* =============== day/night application =============== */
 const C_FOG_N=new THREE.Color(0x04070d), C_FOG_D=new THREE.Color(0x9fb2c2);
