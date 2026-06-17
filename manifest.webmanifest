@@ -1,0 +1,17 @@
+{
+  "name": "DroneWatch — Air & Threat Alerts",
+  "short_name": "DroneWatch",
+  "description": "Region-scoped public alerts for drones, air-raid, and hazard awareness. Fuses official CAP feeds, vetted OSINT, and community reports.",
+  "start_url": "/?quality=low",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#05070b",
+  "theme_color": "#05070b",
+  "categories": ["news", "utilities", "navigation"],
+  "lang": "en",
+  "dir": "auto",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

@@ -4,7 +4,15 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash, timingSafeEqual } from 'node:crypto';
+import dns from 'node:dns';
+import net from 'node:net';
 import { XMLParser } from 'fast-xml-parser';
+
+// IPv4-only / broken-IPv6 networks make undici's happy-eyeballs hang (ETIMEDOUT)
+// on hosts that publish AAAA records (e.g. USGS via CloudFront). Force IPv4 so
+// outbound feed fetches stay reliable. Harmless on dual-stack hosts.
+dns.setDefaultResultOrder('ipv4first');
+net.setDefaultAutoSelectFamily(false);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -123,6 +131,25 @@ const DEFAULT_REGION_ID = process.env.DEFAULT_REGION || 'lebanon';
 const CONFIGURED_CAP_FEEDS = splitEnv(process.env.CAP_FEEDS);
 const OSINT_JSON_FEEDS = splitEnv(process.env.OSINT_JSON_FEEDS);
 const NOTIFY_WEBHOOK_URL = process.env.NOTIFY_WEBHOOK_URL || '';
+// Real, no-API-key hazard feeds (USGS earthquakes + NASA EONET). On by default.
+const ENABLE_HAZARD_FEEDS = process.env.DISABLE_HAZARD_FEEDS !== '1';
+// Regional conflict-news OSINT (no key). On by default; capped at moderate severity.
+const ENABLE_NEWS_FEED = process.env.DISABLE_NEWS_FEED !== '1';
+const NEWS_RSS_FEEDS = splitEnv(process.env.NEWS_RSS_FEEDS).length
+  ? splitEnv(process.env.NEWS_RSS_FEEDS)
+  : [
+      'https://www.aljazeera.com/xml/rss/all.xml',
+      'https://feeds.bbci.co.uk/news/world/middle_east/rss.xml'
+    ];
+const REGION_NEWS_TERMS = {
+  'lebanon': ['lebanon', 'beirut', 'hezbollah', 'litani', 'bekaa', 'tyre', 'sidon', 'nabatieh', 'baalbek'],
+  'east-med': ['lebanon', 'israel', 'syria', 'cyprus', 'mediterranean', 'beirut', 'damascus', 'hezbollah', 'gaza'],
+  'israel-palestine': ['israel', 'gaza', 'west bank', 'jerusalem', 'tel aviv', 'idf', 'hamas', 'palestin'],
+  'syria': ['syria', 'damascus', 'aleppo', 'homs', 'idlib', 'latakia'],
+  'jordan': ['jordan', 'amman', 'aqaba'],
+  'cyprus': ['cyprus', 'nicosia', 'larnaca', 'limassol'],
+  'ukraine': ['ukraine', 'kyiv', 'kharkiv', 'odesa', 'odessa', 'lviv', 'dnipro', 'russia', 'shahed', 'drone']
+};
 const SUBSCRIBERS_FILE = path.join(__dirname, 'subscribers.json');
 const NOTIFICATION_STATE_FILE = path.join(__dirname, 'notification-state.json');
 const NOTIFICATION_OUTBOX_FILE = path.join(__dirname, 'alert-outbox.jsonl');
@@ -146,6 +173,7 @@ const parser = new XMLParser({
 });
 
 const cacheByRegion = new Map();
+const sseClients = new Set(); // live Server-Sent Events subscribers
 const notifiedKeys = new Set();
 const reportRateLimits = new Map();
 const confirmationRateLimits = new Map();
@@ -263,6 +291,16 @@ async function fetchText(url, timeoutMs = 8000) {
 async function fetchJson(url, timeoutMs = 8000) {
   const text = await fetchText(url, timeoutMs);
   return JSON.parse(text);
+}
+
+// Fetch JSON with one retry on transient failure (network blips, brief 5xx).
+async function fetchJsonRetry(url, timeoutMs = 9000, tries = 2) {
+  let lastErr;
+  for (let i = 0; i < tries; i++) {
+    try { return await fetchJson(url, timeoutMs); }
+    catch (e) { lastErr = e; }
+  }
+  throw lastErr;
 }
 
 async function discoverAlertHubFeeds(region) {
@@ -631,6 +669,193 @@ async function fetchOsintJsonFeeds(region) {
 
 function cleanString(value, max = 200) {
   return String(value || '').replace(/\s+/g, ' ').trim().slice(0, max);
+}
+
+// --- Real no-key hazard feeds -------------------------------------------------
+function quakeSeverity(mag) {
+  if (mag >= 6) return 'extreme';
+  if (mag >= 5) return 'severe';
+  if (mag >= 4) return 'moderate';
+  return 'minor';
+}
+
+// USGS earthquakes (past 24h), GeoJSON, no key. Filtered to the region radius.
+async function fetchUsgsQuakes(region) {
+  const url = 'https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/2.5_day.geojson';
+  const sourceStatus = {
+    id: 'usgs-quakes', label: 'USGS earthquakes (M2.5+, 24h)', type: 'hazard-usgs', url,
+    ok: false, checkedAt: new Date().toISOString(), count: 0, detail: ''
+  };
+  if (!ENABLE_HAZARD_FEEDS) { sourceStatus.detail = 'disabled'; return { events: [], sourceStatus }; }
+  try {
+    const doc = await fetchJsonRetry(url, 9000);
+    const events = [];
+    for (const f of asArray(doc.features)) {
+      const p = f.properties || {};
+      const coords = (f.geometry && Array.isArray(f.geometry.coordinates)) ? f.geometry.coordinates : [];
+      const lon = Number(coords[0]);
+      const lat = Number(coords[1]);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+      const mag = Number(p.mag);
+      const raw = {
+        id: f.id || `usgs-${p.code || p.time}`,
+        title: p.title || `M ${Number.isFinite(mag) ? mag.toFixed(1) : '?'} earthquake`,
+        type: 'earthquake',
+        severity: quakeSeverity(mag),
+        certainty: 'observed',
+        confidence: 'official',
+        source: 'USGS',
+        sourceId: 'usgs-quakes',
+        lat, lon,
+        description: `Magnitude ${Number.isFinite(mag) ? mag.toFixed(1) : '?'} earthquake. ${p.place || ''}`.trim(),
+        instruction: 'If shaking is felt: Drop, Cover, and Hold On. Stay away from windows and heavy objects. Expect aftershocks.',
+        updated: p.time ? new Date(p.time).toISOString() : new Date().toISOString(),
+        expires: null,
+        url: p.url || url
+      };
+      const ev = normalizeOsintEvent(raw, sourceStatus.label, 'hazard-usgs');
+      if (inRadius(ev, region)) events.push({ ...ev, regionId: region.id });
+    }
+    sourceStatus.ok = true;
+    sourceStatus.count = events.length;
+    sourceStatus.detail = `${events.length} quake(s) within ${region.center.radiusKm} km`;
+    return { events, sourceStatus };
+  } catch (error) {
+    sourceStatus.detail = error.message;
+    return { events: [], sourceStatus };
+  }
+}
+
+function eonetMap(categoryId) {
+  const m = {
+    wildfires: { type: 'wildfire', severity: 'severe' },
+    severeStorms: { type: 'storm', severity: 'severe' },
+    volcanoes: { type: 'volcano', severity: 'severe' },
+    floods: { type: 'flood', severity: 'severe' },
+    landslides: { type: 'landslide', severity: 'moderate' },
+    dustHaze: { type: 'dust-haze', severity: 'moderate' },
+    drought: { type: 'drought', severity: 'minor' }
+  };
+  return m[categoryId] || { type: 'natural-hazard', severity: 'moderate' };
+}
+
+// NASA EONET open natural-hazard events, no key. Filtered to the region radius.
+async function fetchEonet(region) {
+  const url = 'https://eonet.gsfc.nasa.gov/api/v3/events?status=open&limit=200';
+  const sourceStatus = {
+    id: 'nasa-eonet', label: 'NASA EONET natural hazards', type: 'hazard-eonet', url,
+    ok: false, checkedAt: new Date().toISOString(), count: 0, detail: ''
+  };
+  if (!ENABLE_HAZARD_FEEDS) { sourceStatus.detail = 'disabled'; return { events: [], sourceStatus }; }
+  try {
+    const doc = await fetchJsonRetry(url, 9000);
+    const events = [];
+    for (const ev of asArray(doc.events)) {
+      const cat = asArray(ev.categories)[0] || {};
+      const mapped = eonetMap(cat.id);
+      const geos = asArray(ev.geometry || ev.geometries);
+      const last = geos[geos.length - 1] || {};
+      let lon, lat;
+      if (last.type === 'Point' && Array.isArray(last.coordinates)) {
+        lon = Number(last.coordinates[0]); lat = Number(last.coordinates[1]);
+      } else if (Array.isArray(last.coordinates)) {
+        const ring = Array.isArray(last.coordinates[0]) ? last.coordinates[0] : [];
+        if (ring.length) {
+          lon = ring.reduce((s, p) => s + Number(p[0]), 0) / ring.length;
+          lat = ring.reduce((s, p) => s + Number(p[1]), 0) / ring.length;
+        }
+      }
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+      const raw = {
+        id: ev.id || `eonet-${ev.title}`,
+        title: ev.title || cat.title || 'Natural hazard',
+        type: mapped.type,
+        severity: mapped.severity,
+        certainty: 'observed',
+        confidence: 'osint',
+        source: 'NASA EONET',
+        sourceId: 'nasa-eonet',
+        lat, lon,
+        description: `${cat.title || 'Natural hazard'}: ${ev.title || ''}`.trim(),
+        instruction: 'Monitor official guidance for this hazard and avoid the affected area.',
+        updated: last.date ? new Date(last.date).toISOString() : new Date().toISOString(),
+        expires: null,
+        url: (asArray(ev.sources)[0] || {}).url || 'https://eonet.gsfc.nasa.gov/'
+      };
+      const e = normalizeOsintEvent(raw, sourceStatus.label, 'hazard-eonet');
+      if (inRadius(e, region)) events.push({ ...e, regionId: region.id });
+    }
+    sourceStatus.ok = true;
+    sourceStatus.count = events.length;
+    sourceStatus.detail = `${events.length} open hazard(s) within ${region.center.radiusKm} km`;
+    return { events, sourceStatus };
+  } catch (error) {
+    sourceStatus.detail = error.message;
+    return { events: [], sourceStatus };
+  }
+}
+
+function newsSeverity(text) {
+  const s = String(text).toLowerCase();
+  // Capped at moderate on purpose: unverified news must never trigger severe pages.
+  if (/(airstrike|air strike|air raid|missile|drone strike|shelling|explosion|killed|casualt)/.test(s)) return 'moderate';
+  return 'minor';
+}
+
+// Regional conflict news via public RSS (no key). List-only context (no coords),
+// region-filtered by keyword, severity capped at moderate, expires after 6h.
+async function fetchNewsFeeds(region) {
+  const terms = REGION_NEWS_TERMS[region.id] || [region.label.toLowerCase()];
+  const sourceStatus = {
+    id: 'osint-news', label: 'Regional conflict news (RSS)', type: 'osint-news',
+    ok: false, checkedAt: new Date().toISOString(), count: 0, detail: ''
+  };
+  if (!ENABLE_NEWS_FEED) { sourceStatus.detail = 'disabled'; return { events: [], sourceStatus }; }
+  const events = [];
+  let anyOk = false;
+  const errors = [];
+  for (const url of NEWS_RSS_FEEDS) {
+    try {
+      const xml = await fetchText(url, 8000);
+      const doc = parser.parse(xml);
+      for (const item of asArray(doc.rss?.channel?.item)) {
+        const title = firstText(item.title);
+        const description = cleanString(firstText(item.description), 280);
+        const blob = `${title} ${description}`.toLowerCase();
+        if (!terms.some(t => blob.includes(t))) continue;
+        const pub = parseDate(item.pubDate) || new Date().toISOString();
+        events.push(normalizeOsintEvent({
+          id: firstText(item.guid) || firstText(item.link) || `news-${title}`,
+          title: title || 'Regional news',
+          type: 'news',
+          severity: newsSeverity(blob),
+          certainty: 'reported',
+          confidence: 'osint-news',
+          source: new URL(url).hostname.replace(/^www\./, ''),
+          sourceId: 'osint-news',
+          regionId: region.id,
+          description,
+          instruction: 'Context only — unverified news, not an official alert. Verify before acting.',
+          updated: pub,
+          expires: new Date(new Date(pub).getTime() + 24 * 60 * 60 * 1000).toISOString(),
+          url: firstText(item.link) || url
+        }, sourceStatus.label, 'osint-news'));
+      }
+      anyOk = true;
+    } catch (error) {
+      errors.push(`${new URL(url).hostname}: ${error.message}`);
+    }
+  }
+  // Dedupe by title and keep the most recent 25.
+  const seen = new Set();
+  const deduped = events
+    .filter(e => { const k = (e.title || '').toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; })
+    .sort((a, b) => new Date(b.updated || 0) - new Date(a.updated || 0))
+    .slice(0, 25);
+  sourceStatus.ok = anyOk;
+  sourceStatus.count = deduped.length;
+  sourceStatus.detail = anyOk ? `${deduped.length} regional item(s)` : (errors.join('; ') || 'no feeds reachable');
+  return { events: deduped, sourceStatus };
 }
 
 function requestFingerprint(req) {
@@ -1181,6 +1406,12 @@ async function buildThreatPayload(region) {
     sourceStatuses.push(result.sourceStatus);
   }
 
+  const hazardResults = await Promise.all([fetchUsgsQuakes(region), fetchEonet(region), fetchNewsFeeds(region)]);
+  for (const result of hazardResults) {
+    eventSets.push(result.events);
+    sourceStatuses.push(result.sourceStatus);
+  }
+
   const demo = demoEvents(region);
   if (demo.length) {
     eventSets.push(demo);
@@ -1251,11 +1482,32 @@ async function threats(regionId) {
   return payload;
 }
 
+// Push fresh threats to every connected SSE client, computing each region once.
+async function broadcastThreats() {
+  if (!sseClients.size) return;
+  const byRegion = new Map();
+  for (const c of sseClients) byRegion.set(c.regionId, null);
+  for (const rid of byRegion.keys()) {
+    try { byRegion.set(rid, await threats(rid)); } catch { /* skip region */ }
+  }
+  for (const c of [...sseClients]) {
+    const payload = byRegion.get(c.regionId);
+    if (!payload) continue;
+    try {
+      c.res.write(`event: threats\ndata: ${JSON.stringify(payload)}\n\n`);
+    } catch {
+      sseClients.delete(c);
+    }
+  }
+}
+setInterval(broadcastThreats, 20_000).unref();
+
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
   '.mjs': 'text/javascript; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
+  '.webmanifest': 'application/manifest+json; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
@@ -1321,6 +1573,23 @@ const server = http.createServer(async (req, res) => {
     }
     if (url.pathname === '/api/threats') {
       return json(res, 200, await threats(url.searchParams.get('region')));
+    }
+    if (url.pathname === '/api/stream') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache, no-transform',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no'
+      });
+      res.write('retry: 10000\n\n');
+      const client = { res, regionId: regionFromId(url.searchParams.get('region')).id };
+      sseClients.add(client);
+      threats(client.regionId)
+        .then(payload => { try { res.write(`event: threats\ndata: ${JSON.stringify(payload)}\n\n`); } catch { /* gone */ } })
+        .catch(() => {});
+      const ping = setInterval(() => { try { res.write(': ping\n\n'); } catch { /* gone */ } }, 25_000);
+      req.on('close', () => { clearInterval(ping); sseClients.delete(client); });
+      return;
     }
     return serveStatic(req, res);
   } catch (error) {

@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="DroneWatch">
+  <rect width="512" height="512" rx="96" fill="#05070b"/>
+  <circle cx="256" cy="256" r="150" fill="none" stroke="#ffb454" stroke-width="10" opacity="0.55"/>
+  <circle cx="256" cy="256" r="96" fill="none" stroke="#ffb454" stroke-width="10" opacity="0.75"/>
+  <!-- crosshair -->
+  <line x1="256" y1="40" x2="256" y2="120" stroke="#ffb454" stroke-width="10"/>
+  <line x1="256" y1="392" x2="256" y2="472" stroke="#ffb454" stroke-width="10"/>
+  <line x1="40" y1="256" x2="120" y2="256" stroke="#ffb454" stroke-width="10"/>
+  <line x1="392" y1="256" x2="472" y2="256" stroke="#ffb454" stroke-width="10"/>
+  <!-- quad drone glyph -->
+  <g stroke="#7dff9a" stroke-width="14" stroke-linecap="round">
+    <line x1="196" y1="196" x2="316" y2="316"/>
+    <line x1="316" y1="196" x2="196" y2="316"/>
+  </g>
+  <g fill="#7dff9a">
+    <circle cx="196" cy="196" r="26"/>
+    <circle cx="316" cy="196" r="26"/>
+    <circle cx="196" cy="316" r="26"/>
+    <circle cx="316" cy="316" r="26"/>
+  </g>
+  <circle cx="256" cy="256" r="20" fill="#ff4d4d"/>
+</svg>

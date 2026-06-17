@@ -2,8 +2,18 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>DroneWatch — Public Threat Alert MVP</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#05070b">
+<meta name="color-scheme" content="dark">
+<meta name="description" content="Region-scoped public alerts for drones, air-raid, and hazard awareness — official CAP feeds, vetted OSINT, live hazards, and community reports.">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="DroneWatch">
+<link rel="apple-touch-icon" href="/icon.svg">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -561,6 +571,7 @@
   <section class="dashTab" id="tab-changes">
     <div class="guideBlock">
       <h4>CHANGELOG</h4>
+      <div class="changeItem"><span class="date">1.0</span><span>Live data + installable app: real no-key OSINT/hazard feeds (USGS earthquakes, NASA EONET, regional conflict-news RSS), real-time push via Server-Sent Events with a LIVE indicator, and a PWA (installable, offline shell, last-known alerts cached). Forced IPv4 egress so feeds stay reliable.</span></div>
       <div class="changeItem"><span class="date">0.9</span><span>Added resource guards so long-running servers stay bounded: capped the in-memory notify dedupe set, rotate the alert outbox at 5 MB, and sweep idle rate-limit buckets.</span></div>
       <div class="changeItem"><span class="date">0.8</span><span>Protected the app behind HTTP Basic Auth (env-based credentials, no secrets in source) and renamed this tab to CHANGELOG.</span></div>
       <div class="changeItem"><span class="date">0.7</span><span>Added subscriber verification requests and community confirmation for public reports.</span></div>
@@ -2172,6 +2183,7 @@ function selectRegion(regionId){
   drawGlobalMap();
   renderThreatPanel();
   fetchThreatFeed();
+  startThreatStream();
 }
 
 function initDashTabs(){
@@ -2480,6 +2492,42 @@ initPlanForm();
 initGlobalMap();
 initRegions().then(fetchThreatFeed);
 setInterval(fetchThreatFeed,20000);
+
+/* ---- live updates via Server-Sent Events (poll above stays as fallback) ---- */
+let threatStream=null;
+function setLive(on){
+  threatState.live=on;
+  const h=document.querySelector('#threatPanel h3');
+  if(!h) return;
+  let b=document.getElementById('liveBadge');
+  if(!b){ b=document.createElement('span'); b.id='liveBadge';
+    b.style.cssText='float:right;font-size:9px;letter-spacing:.12em;padding:1px 6px;border:1px solid var(--line);border-radius:3px'; h.appendChild(b); }
+  b.textContent=on?'● LIVE':'○ POLLING';
+  b.style.color=on?'var(--green)':'#72808f';
+  b.style.borderColor=on?'var(--green-dim)':'var(--line)';
+}
+function startThreatStream(){
+  if(!('EventSource' in window)){ setLive(false); return; }
+  try{
+    if(threatStream){ threatStream.close(); threatStream=null; }
+    const rid=regionState.selectedId||'lebanon';
+    const es=new EventSource('/api/stream?region='+encodeURIComponent(rid));
+    threatStream=es;
+    es.addEventListener('threats',ev=>{
+      try{ const p=JSON.parse(ev.data);
+        if((p.region?.id||rid)===(regionState.selectedId||'lebanon')){ applyThreatPayload(p); setLive(true); }
+      }catch(e){}
+    });
+    es.onopen=()=>setLive(true);
+    es.onerror=()=>setLive(false); // browser auto-reconnects; the 20s poll covers the gap
+  }catch(e){ setLive(false); }
+}
+startThreatStream();
+
+/* ---- PWA: register service worker for installability + offline shell ---- */
+if('serviceWorker' in navigator){
+  window.addEventListener('load',()=>{ navigator.serviceWorker.register('/sw.js').catch(()=>{}); });
+}
 
 /* =============== day/night application =============== */
 const C_FOG_N=new THREE.Color(0x04070d), C_FOG_D=new THREE.Color(0x9fb2c2);
