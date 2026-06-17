@@ -1,0 +1,13 @@
+{
+  "name": "dronewatch-mvp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "start:demo": "MVP_DEMO=1 node server.mjs"
+  },
+  "dependencies": {
+    "fast-xml-parser": "^5.9.1"
+  }
+}

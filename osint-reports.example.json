@@ -1,0 +1,24 @@
+{
+  "events": [
+    {
+      "id": "example-vetted-uav-report",
+      "title": "Suspected UAV activity reported north of Beirut",
+      "type": "drone",
+      "severity": "severe",
+      "certainty": "possible",
+      "confidence": "osint-corroborated",
+      "source": "Example vetted OSINT desk",
+      "description": "Example only. Replace with a validated report source before operational use.",
+      "instruction": "Move to shelter or an interior room away from windows. Follow official local instructions.",
+      "area": "Beirut sector",
+      "lat": 33.94,
+      "lon": 35.57,
+      "heading": 215,
+      "speedKph": 120,
+      "etaMinutes": 8,
+      "updated": "2026-06-17T06:00:00.000Z",
+      "expires": "2026-06-17T06:20:00.000Z",
+      "url": "https://example.org/source"
+    }
+  ]
+}

@@ -1,0 +1,2663 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DroneWatch — Public Threat Alert MVP</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<style>
+  :root{
+    --amber:#ffb454; --amber-dim:rgba(255,180,84,.55);
+    --green:#7dff9a; --green-dim:rgba(125,255,154,.55);
+    --red:#ff4d4d;
+    --panel:rgba(8,12,18,.78);
+    --line:rgba(255,180,84,.28);
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%;overflow:hidden;background:#000}
+  body{font-family:'IBM Plex Mono',monospace;color:var(--amber);cursor:crosshair;
+       -webkit-user-select:none;user-select:none}
+  canvas{display:block}
+  #c{position:fixed;inset:0;transition:filter .12s}
+  #c.glitchy{filter:saturate(1.35) contrast(1.18) brightness(1.06) hue-rotate(3deg)}
+  #globalMap{position:fixed;inset:0;z-index:7;background:#07111c;overflow:hidden}
+  #leafletMap{position:absolute;inset:0;filter:saturate(.86) contrast(1.02) brightness(.82)}
+  .leaflet-container{font-family:'IBM Plex Mono',monospace;background:#07111c;color:#d8dee6}
+  .leaflet-control-zoom a{background:rgba(5,8,13,.82)!important;color:var(--amber)!important;
+    border-bottom-color:rgba(255,255,255,.12)!important}
+  .leaflet-control-attribution{background:rgba(5,8,13,.72)!important;color:#8d98a5!important;
+    font-size:9px!important}
+  .leaflet-control-attribution a{color:var(--amber)!important}
+  .leaflet-div-icon.region-icon,.leaflet-div-icon.alert-icon{background:transparent;border:0}
+  .regionPin{transform:translate(-50%,-50%);text-align:center;color:#f0f3f6;font-size:10px;
+    letter-spacing:.10em;line-height:1.35;text-shadow:0 0 8px rgba(0,0,0,.95);white-space:nowrap}
+  .regionPin .dot{display:block;width:16px;height:16px;border:2px solid var(--amber);border-radius:50%;
+    margin:0 auto 5px;background:rgba(255,180,84,.18);box-shadow:0 0 18px rgba(255,180,84,.58)}
+  .regionPin.active .dot{border-color:var(--green);background:rgba(125,255,154,.2);
+    box-shadow:0 0 22px rgba(125,255,154,.75)}
+  .regionPin.alert .dot{border-color:var(--red);background:rgba(255,77,77,.22);
+    box-shadow:0 0 24px rgba(255,77,77,.82)}
+  .alertPin{transform:translate(-50%,-50%);width:22px;height:22px;border-radius:50%;
+    border:2px solid var(--red);background:rgba(255,77,77,.22);box-shadow:0 0 24px rgba(255,77,77,.9)}
+  .alertPin.moderate{border-color:var(--amber);background:rgba(255,180,84,.2);box-shadow:0 0 20px rgba(255,180,84,.7)}
+  .alertPin.minor{border-color:var(--green);background:rgba(125,255,154,.16);box-shadow:0 0 18px rgba(125,255,154,.6)}
+  .leaflet-popup-content-wrapper,.leaflet-popup-tip{background:rgba(5,8,13,.92);color:#d8dee6;
+    border:1px solid rgba(255,255,255,.12)}
+  .leaflet-popup-content{font-size:11px;line-height:1.5}
+  #globalLegend{position:fixed;left:18px;top:64px;z-index:22;max-width:min(360px,calc(100vw - 36px));
+    color:#9da8b4;font-size:10px;line-height:1.7;letter-spacing:.08em;background:rgba(5,8,13,.46);
+    border:1px solid rgba(255,255,255,.08);padding:10px 12px;backdrop-filter:blur(5px)}
+  #globalLegend b{color:var(--amber)}
+
+  /* ---------- layers ---------- */
+  .layer{position:fixed;inset:0;pointer-events:none}
+  #vignette{background:radial-gradient(ellipse at center,transparent 52%,rgba(0,0,0,.42) 100%)}
+
+  /* FPV sensor effects */
+  #fpvfx{opacity:0;transition:opacity .35s}
+  #fpvfx.on{opacity:1}
+  #scanlines{position:absolute;inset:0;
+    background:repeating-linear-gradient(0deg,rgba(0,0,0,.16) 0px,rgba(0,0,0,.16) 1px,transparent 1px,transparent 3px);
+    mix-blend-mode:multiply}
+  #grain{position:absolute;inset:-64px;opacity:.10;image-rendering:pixelated;transition:opacity .15s}
+  #fpvfx.glitch #grain{opacity:.27}
+  #fpvvig{position:absolute;inset:0;background:radial-gradient(ellipse at center,transparent 40%,rgba(0,0,0,.55) 100%)}
+  /* observer mode — same sensor stack, dialled down */
+  #fpvfx.obs #grain{opacity:.055}
+  #fpvfx.obs.glitch #grain{opacity:.15}
+  #fpvfx.obs #scanlines{opacity:.45}
+  #fpvfx.obs #fpvvig{opacity:.5}
+  #fpvfx.obs #rollband{display:none}
+  #rollband{position:absolute;left:0;right:0;height:90px;opacity:.05;
+    background:linear-gradient(180deg,transparent,rgba(255,255,255,.7),transparent);
+    animation:roll 7s linear infinite}
+  @keyframes roll{0%{top:-15%}100%{top:115%}}
+  #slices{position:absolute;inset:0;opacity:0;mix-blend-mode:screen;
+    background:linear-gradient(180deg,rgba(120,160,255,.10) 0%,rgba(255,120,120,.07) 50%,rgba(120,255,180,.08) 100%)}
+  #fpvfx.glitch #slices{opacity:.7;animation:sliceshift .13s steps(3) infinite}
+  @keyframes sliceshift{
+    0%{transform:translateX(-7px);clip-path:inset(12% 0 64% 0)}
+    33%{transform:translateX(6px);clip-path:inset(48% 0 30% 0)}
+    66%{transform:translateX(-4px);clip-path:inset(70% 0 12% 0)}
+    100%{transform:translateX(3px);clip-path:inset(28% 0 52% 0)}}
+
+  /* ---------- boot ---------- */
+  #boot{position:fixed;inset:0;background:#020203;z-index:60;display:flex;flex-direction:column;
+        align-items:center;justify-content:center;gap:0;transition:opacity .8s}
+  #boot.gone{opacity:0;pointer-events:none}
+  #bootlog{font-size:12px;line-height:1.7;color:#6f7d8c;white-space:pre;min-height:130px;width:min(640px,86vw)}
+  #bootlog .ok{color:var(--green)}
+  #title{font-family:'Big Shoulders Display',sans-serif;font-weight:800;font-size:clamp(54px,9vw,118px);
+         letter-spacing:.06em;color:#e8ecf2;line-height:.95;margin:18px 0 4px}
+  #title b{color:var(--amber)}
+  #subtitle{font-size:12px;letter-spacing:.42em;color:#6f7d8c;margin-bottom:30px}
+  #simnote{font-size:11px;color:#4a5560;margin-top:26px;max-width:560px;text-align:center;line-height:1.8}
+  #startbtn{margin-top:22px;pointer-events:auto;cursor:pointer;background:none;
+    border:1px solid var(--line);color:var(--amber);font-family:inherit;font-size:14px;
+    letter-spacing:.3em;padding:14px 44px;transition:.2s;opacity:0}
+  #startbtn.ready{opacity:1}
+  #startbtn:hover{background:rgba(255,180,84,.1);box-shadow:0 0 24px rgba(255,180,84,.25)}
+
+  /* ---------- observer chrome ---------- */
+  .chrome{position:fixed;z-index:20;pointer-events:none;font-size:11px;letter-spacing:.14em;
+          transition:opacity .4s;opacity:0}
+  .chrome.on{opacity:1}
+  #topbar{top:0;left:0;right:0;display:flex;justify-content:space-between;padding:14px 18px;
+          color:#8d98a5;text-shadow:0 0 6px rgba(0,0,0,.8)}
+  #topbar b{color:var(--amber)}
+  #hint{bottom:14px;left:18px;color:#5d6873;line-height:2}
+  #hint kbd{color:var(--amber);border:1px solid rgba(255,180,84,.3);padding:0 5px;border-radius:2px;font-family:inherit}
+
+  /* contact list */
+  #contacts{top:64px;right:18px;width:236px;pointer-events:auto;
+    background:rgba(5,8,13,.42);border:1px solid rgba(255,255,255,.07);
+    padding:10px 10px 6px;backdrop-filter:blur(5px)}
+  #contacts h3{font-size:10px;color:#5d6873;letter-spacing:.3em;border-bottom:1px solid rgba(255,255,255,.08);
+               padding-bottom:6px;margin-bottom:6px;font-weight:400}
+  .contact{display:flex;justify-content:space-between;align-items:baseline;padding:7px 8px;cursor:pointer;
+           border-left:2px solid transparent;transition:.15s;background:rgba(5,8,12,.4)}
+  .contact:hover,.contact.hot{background:rgba(255,180,84,.08);border-left-color:var(--amber)}
+  .contact .cs{color:#d8dee6;font-size:11px}
+  .contact .alt{color:#5d6873;font-size:10px}
+  .contact .sig{color:var(--amber);font-size:10px}
+
+  /* live threat feed */
+  #contacts{display:none!important}
+  #threatPanel{top:64px;right:18px;width:min(380px,calc(100vw - 36px));max-height:calc(100vh - 92px);
+    pointer-events:auto;background:rgba(5,8,13,.62);border:1px solid rgba(255,255,255,.10);
+    padding:12px 12px 10px;backdrop-filter:blur(8px);overflow:auto}
+  #threatPanel h3{font-size:10px;color:#77828f;letter-spacing:.28em;border-bottom:1px solid rgba(255,255,255,.08);
+    padding-bottom:8px;margin-bottom:10px;font-weight:400}
+  #threatTabs{display:grid;grid-template-columns:repeat(6,1fr);gap:6px;margin:0 0 10px}
+  #threatTabs button{pointer-events:auto;cursor:pointer;background:rgba(255,255,255,.035);
+    border:1px solid rgba(255,255,255,.10);color:#8d98a5;font-family:inherit;font-size:10px;
+    letter-spacing:.12em;padding:7px 4px}
+  #threatTabs button.active{color:var(--amber);border-color:rgba(255,180,84,.38);
+    background:rgba(255,180,84,.09)}
+  #regionBar{display:grid;grid-template-columns:1fr;gap:4px;margin:0 0 10px}
+  #regionBar label{color:#77828f;font-size:9px;letter-spacing:.18em}
+  #regionSelect{width:100%;background:rgba(0,0,0,.34);border:1px solid rgba(255,255,255,.12);
+    color:#e4e9ee;font-family:inherit;font-size:11px;padding:8px 9px;outline:none}
+  #regionSelect:focus{border-color:rgba(255,180,84,.48)}
+  #regionNote{color:#657280;font-size:9px;line-height:1.45;min-height:13px}
+  .dashTab{display:none}
+  .dashTab.active{display:block}
+  #threatSummary{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;
+    color:#d8dee6;font-size:11px;line-height:1.55;margin-bottom:10px}
+  #threatSummary b{color:var(--green);font-weight:600}
+  #threatSummary b.warn{color:var(--red)}
+  #threatSummary .meta{color:#72808f;text-align:right;font-size:10px}
+  #threatList{display:flex;flex-direction:column;gap:8px}
+  .threatEvent{border-left:3px solid var(--amber);background:rgba(255,255,255,.035);
+    padding:9px 10px;color:#cfd7df;cursor:pointer;transition:.14s}
+  .threatEvent:hover,.threatEvent.hot{background:rgba(255,180,84,.10)}
+  .threatEvent.extreme,.threatEvent.severe{border-left-color:var(--red)}
+  .threatEvent.moderate{border-left-color:var(--amber)}
+  .threatEvent.minor{border-left-color:var(--green)}
+  .threatEvent .trow{display:flex;justify-content:space-between;gap:10px;align-items:baseline}
+  .threatEvent .title{color:#f0f3f6;font-size:11px;letter-spacing:.08em;line-height:1.45}
+  .threatEvent .sev{font-size:10px;color:var(--amber);white-space:nowrap}
+  .threatEvent.extreme .sev,.threatEvent.severe .sev{color:var(--red)}
+  .threatEvent .desc{margin-top:5px;color:#8d98a5;font-size:10px;line-height:1.55;letter-spacing:.04em}
+  .threatEvent .rec{margin-top:7px;color:#d8dee6;font-size:10px;line-height:1.55;letter-spacing:.04em}
+  .threatEvent .foot{display:flex;justify-content:space-between;gap:10px;margin-top:7px;
+    color:#63707d;font-size:9px;line-height:1.45}
+  #sourceHealth{border-top:1px solid rgba(255,255,255,.08);margin-top:10px;padding-top:8px;
+    color:#657280;font-size:9px;line-height:1.6}
+  #sourceHealth span{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .guideBlock{border-left:3px solid rgba(255,180,84,.55);background:rgba(255,255,255,.035);
+    padding:9px 10px;margin-bottom:8px;color:#cfd7df;font-size:10px;line-height:1.55;letter-spacing:.04em}
+  .guideBlock.danger{border-left-color:var(--red)}
+  .guideBlock.safe{border-left-color:var(--green)}
+  .guideBlock h4{font-size:10px;color:#f0f3f6;letter-spacing:.14em;margin-bottom:5px;font-weight:600}
+  .guideBlock p{margin:0 0 6px;color:#9da8b4}
+  .guideBlock p:last-child{margin-bottom:0}
+  .guideBlock b{color:#f0f3f6;font-weight:600}
+  .guideBlock .level{display:grid;grid-template-columns:74px 1fr;gap:8px;border-top:1px solid rgba(255,255,255,.07);
+    padding-top:6px;margin-top:6px}
+  .guideBlock .level:first-of-type{border-top:0;padding-top:0;margin-top:0}
+  .guideBlock .extreme{color:var(--red)}
+  .guideBlock .severe{color:#ff7777}
+  .guideBlock .moderate{color:var(--amber)}
+  .guideBlock .minor{color:var(--green)}
+  .changeItem{display:grid;grid-template-columns:62px 1fr;gap:8px;border-top:1px solid rgba(255,255,255,.07);
+    padding-top:7px;margin-top:7px}
+  .changeItem:first-child{border-top:0;padding-top:0;margin-top:0}
+  .changeItem .date{color:#77828f}
+  #signupForm,#reportForm{display:flex;flex-direction:column;gap:8px}
+  #signupForm label,#reportForm label{display:flex;flex-direction:column;gap:4px;color:#8d98a5;font-size:9px;letter-spacing:.12em}
+  #signupForm input,#signupForm select,#reportForm input,#reportForm select,#reportForm textarea{width:100%;background:rgba(0,0,0,.34);border:1px solid rgba(255,255,255,.12);
+    color:#e4e9ee;font-family:inherit;font-size:11px;padding:9px 10px;outline:none}
+  #reportForm textarea{min-height:82px;resize:vertical;line-height:1.45}
+  #signupForm input:focus,#signupForm select:focus,#reportForm input:focus,#reportForm select:focus,#reportForm textarea:focus{border-color:rgba(255,180,84,.48)}
+  #signupForm button,#reportForm button{cursor:pointer;border:1px solid rgba(255,180,84,.45);background:rgba(255,180,84,.09);
+    color:var(--amber);font-family:inherit;font-size:11px;letter-spacing:.18em;padding:10px 12px}
+  #signupStatus,#reportStatus{min-height:18px;color:#8d98a5;font-size:10px;line-height:1.45}
+  #verificationList{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+  .reportCard{border-left:3px solid var(--amber);background:rgba(255,255,255,.035);padding:9px 10px;color:#cfd7df}
+  .reportCard.corroborated{border-left-color:var(--green)}
+  .reportCard h5{font-size:10px;color:#f0f3f6;letter-spacing:.12em;margin-bottom:5px;font-weight:600}
+  .reportCard .meta{color:#7c8794;font-size:9px;line-height:1.5;margin-bottom:6px}
+  .reportCard .desc{color:#a5b0bc;font-size:10px;line-height:1.45;margin-bottom:8px}
+  .reportActions{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+  .reportActions button{cursor:pointer;border:1px solid rgba(255,255,255,.13);background:rgba(0,0,0,.22);
+    color:#d8dee6;font-family:inherit;font-size:9px;letter-spacing:.12em;padding:8px 6px}
+  .reportActions button.confirm{border-color:rgba(125,255,154,.38);color:var(--green)}
+  .reportActions button.mute{color:#8d98a5}
+  #planForm{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+  #planForm label{display:flex;flex-direction:column;gap:4px;color:#8d98a5;font-size:9px;letter-spacing:.12em}
+  #planForm input,#planForm select{width:100%;background:rgba(0,0,0,.34);border:1px solid rgba(255,255,255,.12);
+    color:#e4e9ee;font-family:inherit;font-size:11px;padding:9px 10px;outline:none}
+  #planForm input:focus,#planForm select:focus{border-color:rgba(255,180,84,.48)}
+  #planForm button{cursor:pointer;border:1px solid rgba(255,180,84,.45);background:rgba(255,180,84,.09);
+    color:var(--amber);font-family:inherit;font-size:11px;letter-spacing:.18em;padding:10px 12px}
+  #planStatus{min-height:18px;color:#8d98a5;font-size:10px;line-height:1.45}
+  .planLine{display:grid;grid-template-columns:78px 1fr;gap:8px;border-top:1px solid rgba(255,255,255,.07);
+    padding-top:7px;margin-top:7px}
+  .planLine:first-of-type{border-top:0;padding-top:0;margin-top:0}
+  .planLine b{color:var(--amber)}
+
+  @media (max-width:720px){
+    body{cursor:default}
+    #topbar{font-size:9px;letter-spacing:.08em;padding:9px 10px;gap:8px;flex-direction:column}
+    #hint{display:none}
+    #globalLegend{left:8px;right:8px;top:58px;max-width:none;font-size:9px;padding:8px 10px}
+    .regionPin{font-size:8px;letter-spacing:.04em}
+    .regionPin .dot{width:12px;height:12px;margin-bottom:4px}
+    #threatPanel{left:8px;right:8px;top:auto;bottom:8px;width:auto;max-height:54vh;
+      padding:10px;border-radius:6px;background:rgba(5,8,13,.78)}
+    #threatPanel h3{font-size:9px;margin-bottom:8px;padding-bottom:7px}
+    #threatTabs{gap:4px}
+    #threatTabs button{font-size:8px;letter-spacing:.04em;padding:9px 2px;min-height:36px}
+    #threatSummary{font-size:10px}
+    .threatEvent{padding:8px}
+    .threatEvent .title{font-size:10px}
+    .threatEvent .desc,.threatEvent .rec,.guideBlock{font-size:10px}
+    .guideBlock .level,.planLine,.changeItem{grid-template-columns:68px 1fr}
+    #sourceHealth{max-height:64px;overflow:hidden}
+    .tmark .label{left:28px;min-width:128px;max-width:164px;font-size:9px}
+    #title{font-size:clamp(42px,16vw,72px)}
+    #subtitle{font-size:10px;letter-spacing:.24em;text-align:center}
+    #bootlog{width:86vw;font-size:10px}
+    #startbtn{padding:13px 34px}
+  }
+  #threatMarks{position:fixed;inset:0;z-index:23;pointer-events:none}
+  .tmark{position:fixed;transform:translate(-50%,-50%);pointer-events:auto;cursor:pointer;display:none}
+  .tmark .ring{width:24px;height:24px;border:2px solid var(--red);border-radius:50%;
+    box-shadow:0 0 18px rgba(255,77,77,.75),inset 0 0 10px rgba(255,77,77,.18);
+    background:rgba(255,77,77,.09);animation:threatPulse 1.4s ease-in-out infinite}
+  .tmark.moderate .ring{border-color:var(--amber);box-shadow:0 0 16px rgba(255,180,84,.6)}
+  .tmark.minor .ring{border-color:var(--green);box-shadow:0 0 14px rgba(125,255,154,.55)}
+  .tmark .label{position:absolute;left:31px;top:-5px;min-width:180px;color:#f2f5f8;font-size:10px;
+    letter-spacing:.10em;line-height:1.45;text-shadow:0 0 8px rgba(0,0,0,.95)}
+  .tmark .label i{display:block;color:#8d98a5;font-style:normal;font-size:9px}
+  @keyframes threatPulse{50%{transform:scale(1.16);opacity:.64}}
+
+  /* target bracket */
+  #bracket{position:fixed;z-index:21;width:66px;height:66px;margin:-33px 0 0 -33px;pointer-events:none;
+           display:none}
+  #bracket .b{position:absolute;width:14px;height:14px;border:1.5px solid var(--amber);
+    filter:drop-shadow(0 0 4px var(--amber-dim))}
+  #bracket .b1{top:0;left:0;border-right:0;border-bottom:0}
+  #bracket .b2{top:0;right:0;border-left:0;border-bottom:0}
+  #bracket .b3{bottom:0;left:0;border-right:0;border-top:0}
+  #bracket .b4{bottom:0;right:0;border-left:0;border-top:0}
+  #bracket .tag{position:absolute;left:72px;top:2px;white-space:nowrap;font-size:10px;letter-spacing:.12em;
+    color:var(--amber);text-shadow:0 0 8px rgba(0,0,0,.9);line-height:1.7}
+  #bracket .tag i{color:#717d8a;font-style:normal}
+
+  #ping{position:fixed;z-index:21;width:12px;height:12px;margin:-6px 0 0 -6px;border:1.5px solid var(--amber);
+        border-radius:50%;pointer-events:none;display:none}
+
+  /* persistent AR drone markers (observer) */
+  #marks{position:fixed;inset:0;z-index:19;pointer-events:none}
+  .dmark{position:fixed;pointer-events:auto;cursor:pointer;transform:translate(-50%,-50%);
+    display:none}
+  .dmark .dia{width:13px;height:13px;border:1.5px solid var(--amber);transform:rotate(45deg);
+    margin:0 auto;box-shadow:0 0 10px rgba(255,180,84,.45);background:rgba(255,180,84,.07);
+    animation:diapulse 2.4s ease-in-out infinite}
+  .dmark .stem{position:absolute;left:50%;top:-26px;width:1px;height:18px;background:var(--amber-dim)}
+  .dmark .lbl{position:absolute;left:50%;top:-58px;transform:translateX(-50%);text-align:center;
+    font-size:10px;letter-spacing:.16em;color:var(--amber);white-space:nowrap;
+    text-shadow:0 0 8px rgba(0,0,0,.95);line-height:1.5}
+  .dmark .lbl i{display:block;color:#8d98a5;font-style:normal;font-size:9px;letter-spacing:.1em}
+  .dmark:hover .dia,.dmark.hot .dia{background:rgba(255,180,84,.35);
+    box-shadow:0 0 18px rgba(255,180,84,.9)}
+  .dmark.pwned .dia{border-color:var(--green);background:rgba(125,255,154,.1);
+    box-shadow:0 0 10px rgba(125,255,154,.45)}
+  .dmark.pwned .lbl{color:var(--green)}
+  @keyframes diapulse{50%{box-shadow:0 0 20px rgba(255,180,84,.85)}}
+  #ping.go{display:block;animation:ping 1.1s ease-out forwards}
+  @keyframes ping{from{transform:scale(1);opacity:1}to{transform:scale(9);opacity:0}}
+
+  /* ---------- HUD (FPV) ---------- */
+  #hud{position:fixed;inset:0;z-index:25;pointer-events:none;opacity:0;transition:opacity .3s;
+       font-size:12px;letter-spacing:.1em;color:var(--amber);
+       text-shadow:0 0 7px rgba(255,180,84,.35),0 1px 2px rgba(0,0,0,.9)}
+  #hud.on{opacity:1}
+  #hud.ctl{color:var(--green);text-shadow:0 0 7px rgba(125,255,154,.35),0 1px 2px rgba(0,0,0,.9)}
+  #hud.glitch{text-shadow:1.5px 0 rgba(255,0,60,.65),-1.5px 0 rgba(0,180,255,.65),0 1px 2px rgba(0,0,0,.9)}
+  .hudcorner{position:absolute;width:34px;height:34px;border:1.5px solid currentColor;opacity:.5}
+  .hc1{top:64px;left:64px;border-right:0;border-bottom:0}
+  .hc2{top:64px;right:64px;border-left:0;border-bottom:0}
+  .hc3{bottom:64px;left:64px;border-right:0;border-top:0}
+  .hc4{bottom:64px;right:64px;border-left:0;border-top:0}
+  #hud .row{position:absolute;display:flex;gap:26px;white-space:nowrap}
+  #h-tl{top:22px;left:24px}
+  #h-tc{top:44px;left:50%;transform:translateX(-50%);color:#71808f;font-size:11px}
+  #h-tr{top:22px;right:24px}
+  #h-bl{bottom:46px;left:24px}
+  #h-bc{bottom:22px;left:50%;transform:translateX(-50%)}
+  #h-br{bottom:46px;right:24px;color:#71808f;font-size:10px}
+  #h-ml{position:absolute;left:24px;top:50%;transform:translateY(-50%);line-height:2.1}
+  #h-mr{position:absolute;right:24px;top:50%;transform:translateY(-50%);text-align:right;line-height:2.1}
+  #rec{color:var(--red);animation:blink 1.2s steps(1) infinite}
+  @keyframes blink{50%{opacity:.15}}
+  #crosshair{position:absolute;left:50%;top:50%;width:120px;height:80px;margin:-40px 0 0 -60px;opacity:.85}
+  #crosshair line{stroke:currentColor;stroke-width:1.2}
+  #hackprompt{position:absolute;bottom:108px;left:50%;transform:translateX(-50%);
+    font-size:13px;letter-spacing:.28em;padding:10px 26px;border:1px solid var(--line);
+    background:rgba(10,8,4,.55);animation:pulse 1.6s ease-in-out infinite}
+  #hackprompt kbd{color:#fff}
+  @keyframes pulse{50%{opacity:.45}}
+  #warnbox{position:absolute;top:108px;left:50%;transform:translateX(-50%);display:none;
+    color:var(--red);border:1px solid rgba(255,77,77,.5);background:rgba(30,4,4,.6);
+    padding:8px 22px;font-size:12px;letter-spacing:.24em;animation:blink .7s steps(1) infinite}
+
+  /* ---------- terminal ---------- */
+  #term{position:fixed;z-index:40;left:50%;top:50%;transform:translate(-50%,-50%);
+    width:min(700px,92vw);max-height:74vh;background:var(--panel);border:1px solid var(--line);
+    box-shadow:0 0 60px rgba(0,0,0,.8),inset 0 0 60px rgba(255,180,84,.03);
+    display:none;flex-direction:column;backdrop-filter:blur(3px)}
+  #term.on{display:flex}
+  #termhead{display:flex;justify-content:space-between;padding:10px 16px;font-size:10px;
+    letter-spacing:.26em;color:#71808f;border-bottom:1px solid rgba(255,255,255,.07)}
+  #termbody{padding:16px 18px;font-size:12px;line-height:1.75;overflow-y:auto;white-space:pre-wrap;
+    color:#b8c2cc;min-height:280px}
+  #termbody .p{color:var(--amber)}
+  #termbody .ok{color:var(--green)}
+  #termbody .err{color:var(--red)}
+  #termbody .dim{color:#5d6873}
+  #keyseq{display:none;justify-content:center;gap:14px;padding:18px 0 22px}
+  #keyseq .k{width:52px;height:52px;border:1px solid var(--line);display:flex;align-items:center;
+    justify-content:center;font-size:22px;color:#d8dee6;background:rgba(255,255,255,.02);transition:.12s}
+  #keyseq .k.hit{border-color:var(--green);color:var(--green);background:rgba(125,255,154,.1);
+    box-shadow:0 0 16px rgba(125,255,154,.25)}
+  #keyseq .k.miss{border-color:var(--red);color:var(--red);animation:shake .25s}
+  @keyframes shake{25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+  #keytimer{height:2px;background:var(--amber);width:100%;transform-origin:left}
+
+  /* glitch transition */
+  #glitch{z-index:50;opacity:0;background:#000}
+  #glitch.go{animation:glitch .42s steps(7) forwards}
+  @keyframes glitch{
+    0%{opacity:.9;background:repeating-linear-gradient(0deg,#0a0f14 0 6px,#1a2530 6px 9px,#05080c 9px 22px)}
+    30%{opacity:.7;background:repeating-linear-gradient(0deg,#141a06 0 14px,#020304 14px 17px,#0c1218 17px 40px)}
+    60%{opacity:.85;background:repeating-linear-gradient(0deg,#06090d 0 3px,#222d38 3px 4px,#04060a 4px 30px)}
+    100%{opacity:0;background:#000}}
+
+  /* toast */
+  #toast{position:fixed;z-index:45;top:70px;left:50%;transform:translateX(-50%);pointer-events:none;
+    display:flex;flex-direction:column;gap:8px;align-items:center}
+  .toastmsg{background:var(--panel);border:1px solid var(--line);padding:8px 22px;font-size:11px;
+    letter-spacing:.22em;color:var(--amber);animation:toastin 4s forwards}
+  .toastmsg.green{color:var(--green);border-color:rgba(125,255,154,.3)}
+  @keyframes toastin{0%{opacity:0;transform:translateY(-8px)}6%{opacity:1;transform:none}
+    82%{opacity:1}100%{opacity:0}}
+
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="globalMap">
+  <div id="leafletMap"></div>
+</div>
+<div id="globalLegend"><b>GLOBAL WATCH</b><br>Select a region to localize alert sources and warning radius.</div>
+
+<div class="layer" id="vignette"></div>
+<div class="layer" id="fpvfx">
+  <div id="fpvvig"></div><div id="grain"></div><div id="scanlines"></div><div id="rollband"></div>
+  <div id="slices"></div>
+</div>
+<div class="layer" id="glitch"></div>
+
+<!-- observer chrome -->
+<div class="chrome" id="topbar">
+  <span><b>DRONEWATCH</b> MVP // PUBLIC ALERT FUSION — CAP + VETTED OSINT</span>
+  <span id="clockstamp">BEIRUT, LB · 33.8938°N 35.5018°E · --:--:--</span>
+</div>
+<div class="chrome" id="hint">
+  <kbd>REGION</kbd> SELECT &nbsp;·&nbsp; <kbd>CLICK</kbd> MAP MARKER &nbsp;·&nbsp; <kbd>SIGN UP</kbd> ALERT DELIVERY &nbsp;·&nbsp; <kbd>T</kbd> CLOCK<br>
+  <span style="color:#3d4750">PUBLIC-FEED MVP — FOLLOW OFFICIAL CIVIL DEFENSE INSTRUCTIONS FIRST.</span>
+</div>
+<div class="chrome" id="contacts"><h3>AIRSPACE CONTACTS</h3></div>
+<div class="chrome" id="threatPanel">
+  <h3>DRONEWATCH DASH</h3>
+  <div id="regionBar">
+    <label for="regionSelect">REGION</label>
+    <select id="regionSelect"></select>
+    <div id="regionNote">Lebanon is the default region.</div>
+  </div>
+  <div id="threatTabs">
+    <button type="button" class="active" data-tab="alerts">ALERTS</button>
+    <button type="button" data-tab="guide">GUIDE</button>
+    <button type="button" data-tab="report">REPORT</button>
+    <button type="button" data-tab="signup">SIGN UP</button>
+    <button type="button" data-tab="plans">PLANS</button>
+    <button type="button" data-tab="changes">LOG</button>
+  </div>
+  <section class="dashTab active" id="tab-alerts">
+    <div id="threatSummary"><span>CONNECTING TO SOURCES</span><span class="meta">--</span></div>
+    <div id="threatList"></div>
+    <div id="sourceHealth"></div>
+  </section>
+  <section class="dashTab" id="tab-guide">
+    <div class="guideBlock danger">
+      <h4>IF ALERT IS SEVERE OR EXTREME</h4>
+      <p><b>Move now.</b> Go to shelter, a basement, stairwell, corridor, or interior room. Stay away from windows, balconies, roofs, and exterior walls.</p>
+      <p>If you hear a drone, blast, siren, or official warning, do not wait for the dashboard to be perfect. Protect yourself first.</p>
+    </div>
+    <div class="guideBlock">
+      <h4>HOW WE KNOW</h4>
+      <p>The MVP checks public CAP alert feeds, configured OSINT feeds, and local vetted reports for the selected region. Every alert shows source, confidence, age, and whether the source check is healthy.</p>
+      <p>It works when a trusted source publishes fast enough and the backend can reach it. It cannot guarantee detection of every small drone or munition.</p>
+    </div>
+    <div class="guideBlock">
+      <h4>THREAT LEVELS</h4>
+      <div class="level"><b class="extreme">EXTREME</b><span>Official or highly corroborated immediate danger. Shelter now.</span></div>
+      <div class="level"><b class="severe">SEVERE</b><span>Credible inbound or nearby attack warning. Get away from glass and exposed rooms.</span></div>
+      <div class="level"><b class="moderate">MODERATE</b><span>Possible or unverified threat in the broader area. Prepare shelter and keep checking official alerts.</span></div>
+      <div class="level"><b class="minor">MINOR</b><span>Advisory or context. No immediate matching threat in the configured area.</span></div>
+    </div>
+    <div class="guideBlock">
+      <h4>CONFIDENCE AND FRESHNESS</h4>
+      <p><b>Official</b> means a recognized alert source. <b>OSINT</b> means a vetted report or feed, not authority. <b>Demo</b> means synthetic test data only.</p>
+      <p>Fresh alerts are recent. Stale alerts are older than 15 minutes or missing timestamps. Stale does not mean safe, but it means verify elsewhere.</p>
+    </div>
+    <div class="guideBlock safe">
+      <h4>MAKE IT WORK IN REAL LIFE</h4>
+      <p>Keep official civil-defense alerts enabled. Add verified local report sources. Test delivery weekly. Do not rely on one feed, one server, or one network.</p>
+      <p>The current 3D basemap is the Lebanon prototype view. Region switching changes alert feeds and filtering; future map tiles should reload per region.</p>
+    </div>
+  </section>
+  <section class="dashTab" id="tab-report">
+    <div class="guideBlock danger">
+      <h4>PUBLIC REPORT INTAKE</h4>
+      <p>Use this for sightings, sounds, or nearby incidents. Public reports are marked unverified and must be reviewed or corroborated before becoming alert-grade.</p>
+      <p>Do not submit rumors, exact home addresses, or someone else's personal details.</p>
+    </div>
+    <form id="reportForm">
+      <label>REPORT TYPE
+        <select id="reportKind" name="kind">
+          <option value="surveillance-drone">Surveillance drone</option>
+          <option value="unknown-drone">Unknown drone</option>
+          <option value="attack-drone">Suspected attack drone</option>
+          <option value="explosion">Explosion / impact heard</option>
+          <option value="other">Other</option>
+        </select>
+      </label>
+      <label>AREA / NEIGHBORHOOD
+        <input id="reportArea" name="area" placeholder="nearest town, district, or landmark">
+      </label>
+      <label>MOVEMENT
+        <select id="reportMovement" name="movement">
+          <option value="unknown">Unknown</option>
+          <option value="hovering">Hovering</option>
+          <option value="passing">Passing over</option>
+          <option value="circling">Circling</option>
+          <option value="approaching">Approaching</option>
+          <option value="leaving">Leaving</option>
+        </select>
+      </label>
+      <label>COUNT
+        <input id="reportCount" name="count" type="number" min="1" max="50" value="1">
+      </label>
+      <label>WHAT DID YOU SEE OR HEAR?
+        <textarea id="reportDescription" name="description" placeholder="sound, altitude impression, direction, lights, repeated passes, impact, official siren, etc."></textarea>
+      </label>
+      <label>OPTIONAL CONTACT
+        <input id="reportContact" name="contact" autocomplete="email tel" placeholder="for reviewer follow-up only">
+      </label>
+      <button type="submit">SUBMIT REPORT</button>
+      <div id="reportStatus"></div>
+    </form>
+    <div class="guideBlock safe">
+      <h4>COMMUNITY CONFIRMATION</h4>
+      <p>If a report matches what you personally saw or heard, confirm it here. Do not move toward danger or go outside to check.</p>
+      <p>Confirmations help reviewers decide what is corroborated; they are not official alerts by themselves.</p>
+    </div>
+    <div id="verificationList"></div>
+  </section>
+  <section class="dashTab" id="tab-signup">
+    <div class="guideBlock">
+      <h4>ALERT SIGNUP</h4>
+      <p>Opt in to receive severe or extreme alerts and nearby verification requests. This MVP stores signups locally and queues matching messages for a delivery provider.</p>
+    </div>
+    <form id="signupForm">
+      <label>CONTACT
+        <input id="signupContact" name="contact" autocomplete="email tel" placeholder="email, phone, or WhatsApp number">
+      </label>
+      <label>CHANNEL
+        <select id="signupChannel" name="channel">
+          <option value="email">Email</option>
+          <option value="sms">SMS</option>
+          <option value="whatsapp">WhatsApp</option>
+        </select>
+      </label>
+      <label>MINIMUM ALERT LEVEL
+        <select id="signupThreshold" name="threshold">
+          <option value="severe">Severe and Extreme</option>
+          <option value="extreme">Extreme Only</option>
+          <option value="moderate">Moderate and Above</option>
+        </select>
+      </label>
+      <label>AREA
+        <input id="signupArea" name="area" value="Beirut sector">
+      </label>
+      <button type="submit">OPT IN</button>
+      <div id="signupStatus"></div>
+    </form>
+    <div class="guideBlock safe">
+      <h4>PRIVACY</h4>
+      <p>Store only contacts needed for alerts. Verify ownership before production sending. Let people unsubscribe. Protect this file like emergency contact data.</p>
+    </div>
+  </section>
+  <section class="dashTab" id="tab-plans">
+    <div class="guideBlock safe">
+      <h4>MONETIZATION MODEL</h4>
+      <p>Emergency map viewing stays free. Paid value is reliability: multi-channel delivery, family/team routing, source verification, incident logs, and organization operations.</p>
+      <div class="planLine"><b>FREE</b><span>Public dashboard, local alerts, one device.</span></div>
+      <div class="planLine"><b>FAMILY</b><span>Suggested $5/mo. Multi-contact delivery, household checklist, weekly delivery test.</span></div>
+      <div class="planLine"><b>TEAM</b><span>Suggested $49/mo. Teams, escalation lists, acknowledgements, exportable incident history.</span></div>
+      <div class="planLine"><b>ORG</b><span>Suggested $499/mo pilot. Verified-source desk, webhook delivery, custom regions, support SLA.</span></div>
+    </div>
+    <div class="guideBlock">
+      <h4>PILOT INTEREST</h4>
+      <p>Capture paying users before wiring Stripe. This stores demand locally so you can validate who will pay and why.</p>
+      <form id="planForm">
+        <label>CONTACT
+          <input id="planContact" name="contact" autocomplete="email" placeholder="email or phone">
+        </label>
+        <label>PLAN
+          <select id="planTier" name="tier">
+            <option value="family">Family</option>
+            <option value="team">Team</option>
+            <option value="org">Organization Pilot</option>
+            <option value="sponsor">Sponsor Free Alerts</option>
+          </select>
+        </label>
+        <label>ORG / GROUP
+          <input id="planOrg" name="org" placeholder="optional">
+        </label>
+        <button type="submit">REQUEST PILOT</button>
+        <div id="planStatus"></div>
+      </form>
+    </div>
+  </section>
+  <section class="dashTab" id="tab-changes">
+    <div class="guideBlock">
+      <h4>CHANGELOG</h4>
+      <div class="changeItem"><span class="date">0.7</span><span>Added subscriber verification requests and community confirmation for public reports.</span></div>
+      <div class="changeItem"><span class="date">0.6</span><span>Added public surveillance drone report intake with review-first handling and pending report counts.</span></div>
+      <div class="changeItem"><span class="date">0.5</span><span>Added selectable alert regions with Lebanon as default and region-aware source filtering.</span></div>
+      <div class="changeItem"><span class="date">0.4</span><span>Added monetization plans, pilot-interest capture, mobile bottom-sheet layout, and low-power rendering mode.</span></div>
+      <div class="changeItem"><span class="date">0.3</span><span>Added dashboard tabs, field guide, threat-level explanations, and alert signup flow.</span></div>
+      <div class="changeItem"><span class="date">0.2</span><span>Removed all audio and WebAudio paths permanently.</span></div>
+      <div class="changeItem"><span class="date">0.1</span><span>Converted the sim into DroneWatch MVP with public CAP feed discovery, local OSINT reports, source health, and live map markers.</span></div>
+    </div>
+  </section>
+</div>
+<div id="bracket"><div class="b b1"></div><div class="b b2"></div><div class="b b3"></div><div class="b b4"></div>
+  <div class="tag"></div></div>
+<div id="ping"></div>
+<div id="marks"></div>
+<div id="threatMarks"></div>
+
+<!-- FPV HUD -->
+<div id="hud">
+  <div class="hudcorner hc1"></div><div class="hudcorner hc2"></div>
+  <div class="hudcorner hc3"></div><div class="hudcorner hc4"></div>
+  <div class="row" id="h-tl"><span id="rec">● REC</span><span id="h-uav">UAV: —</span><span id="h-mode">MODE: —</span></div>
+  <div class="row" id="h-tc"><span id="h-time">—</span></div>
+  <div class="row" id="h-tr"><span id="h-link">LINK —</span><span id="h-bat">BAT —</span><span id="h-enc">ENC: —</span></div>
+  <div id="h-ml"><div id="h-alt">ALT —</div><div id="h-vs">VS —</div><div id="h-gimbal">GMB —</div></div>
+  <div id="h-mr"><div id="h-spd">SPD —</div><div id="h-hdg">HDG —</div><div id="h-wnd">WND —</div><div id="h-cam">EO/NIGHT · ISO 12800</div></div>
+  <div class="row" id="h-bc"><span id="h-gps">—</span></div>
+  <div class="row" id="h-bl"><span id="h-op">OPERATOR: UNIDENTIFIED</span></div>
+  <div class="row" id="h-br"><span id="h-keys"></span></div>
+  <svg id="crosshair" viewBox="0 0 120 80">
+    <line x1="60" y1="28" x2="60" y2="40"/>
+    <line x1="44" y1="40" x2="54" y2="40"/><line x1="66" y1="40" x2="76" y2="40"/>
+    <line x1="60" y1="44" x2="60" y2="52"/>
+    <line x1="20" y1="62" x2="44" y2="62" opacity=".4"/><line x1="76" y1="62" x2="100" y2="62" opacity=".4"/>
+    <line x1="20" y1="18" x2="44" y2="18" opacity=".4"/><line x1="76" y1="18" x2="100" y2="18" opacity=".4"/>
+  </svg>
+  <div id="hackprompt">ALERT DETAIL MODE</div>
+  <div id="warnbox">GEOFENCE — AUTOPILOT CORRECTING</div>
+</div>
+
+<!-- alert detail terminal -->
+<div id="term">
+  <div id="termhead"><span>ALERT DETAIL CONSOLE</span><span id="termtarget">EVENT: —</span><span>[ESC] CLOSE</span></div>
+  <div id="termbody"></div>
+  <div id="keyseq"></div>
+  <div id="keytimer"></div>
+</div>
+
+<div id="toast"></div>
+
+<!-- boot -->
+<div id="boot">
+  <div id="bootlog"></div>
+  <div id="title">DRONE<b>WATCH</b></div>
+  <div id="subtitle">PUBLIC THREAT ALERT MVP — BEIRUT SECTOR</div>
+  <button id="startbtn">INITIALIZE</button>
+  <div id="simnote">Civilian early-warning prototype using public feeds and vetted reports.
+    Source confidence and freshness are always shown.<br>Desktop + mouse recommended.</div>
+</div>
+
+<script type="importmap">
+{"imports":{
+  "three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import {EffectComposer} from 'three/addons/postprocessing/EffectComposer.js';
+import {RenderPass} from 'three/addons/postprocessing/RenderPass.js';
+import {UnrealBloomPass} from 'three/addons/postprocessing/UnrealBloomPass.js';
+import {OutputPass} from 'three/addons/postprocessing/OutputPass.js';
+
+/* ====================================================================
+   CONFIG — optional Google satellite imagery.
+   Paste a Google Maps Platform API key with the "Map Tiles API" enabled
+   to use Google satellite tiles. Left empty, the game uses the free
+   ESRI World Imagery service (no key needed). Either way it is real
+   satellite imagery of Beirut.
+==================================================================== */
+const GOOGLE_MAPS_API_KEY='';
+const SHOW_SIM_CONTACTS=false;
+const params=new URLSearchParams(location.search);
+const USE_3D_BASEMAP=params.get('basemap')==='3d';
+const PERF={
+  mobile: matchMedia('(max-width:720px)').matches || navigator.maxTouchPoints>0,
+  reduced: matchMedia('(prefers-reduced-motion: reduce)').matches || !!navigator.connection?.saveData,
+  quality: params.get('quality') || ''
+};
+PERF.lowPower=PERF.quality==='low'||PERF.mobile||PERF.reduced;
+PERF.targetFps=PERF.quality==='high'?30:(PERF.lowPower?18:24);
+PERF.pixelRatio=PERF.quality==='high'?1.35:(PERF.lowPower?0.8:1.05);
+PERF.msaa=PERF.lowPower?0:2;
+PERF.starCount=PERF.lowPower?900:1800;
+PERF.streetLightCount=PERF.lowPower?6500:16000;
+PERF.buildingCount=PERF.lowPower?420:900;
+PERF.villageLightCount=PERF.lowPower?650:1400;
+PERF.cloudCount=PERF.lowPower?3:5;
+PERF.hazeCount=PERF.lowPower?4:8;
+
+/* =============== utils =============== */
+let _s = 1337;
+const rnd = () => { _s|=0; _s=_s+0x6D2B79F5|0; let t=Math.imul(_s^_s>>>15,1|_s);
+  t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; };
+const rr = (a,b)=>a+rnd()*(b-a);
+const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+const lerp=(a,b,t)=>a+(b-a)*t;
+const sstep=(a,b,v)=>{const t=clamp((v-a)/(b-a),0,1);return t*t*(3-2*t)};
+const KM=1000;
+const LAT0=33.8938, LON0=35.5018;
+const M_PER_LAT=110574, M_PER_LON=111320*Math.cos(LAT0*Math.PI/180);
+
+function hash2(x,y){ const s=Math.sin(x*127.1+y*311.7)*43758.5453; return s-Math.floor(s); }
+function vnoise(x,y){
+  const xi=Math.floor(x),yi=Math.floor(y),xf=x-xi,yf=y-yi;
+  const u=xf*xf*(3-2*xf), v=yf*yf*(3-2*yf);
+  return lerp(lerp(hash2(xi,yi),hash2(xi+1,yi),u),lerp(hash2(xi,yi+1),hash2(xi+1,yi+1),u),v);
+}
+function fbm(x,y){ return vnoise(x,y)*.55+vnoise(x*2.3,y*2.3)*.28+vnoise(x*5.1,y*5.1)*.17; }
+
+/* =============== real time — Beirut sun =============== */
+let timeOffsetMs=0;
+{ // ?t=HH forces a Beirut local hour (testing/demo)
+  const m=location.search.match(/[?&]t=(\d{1,2}(?:\.\d+)?)/);
+  if(m){
+    const target=parseFloat(m[1]);
+    const nowBeirut=new Date().toLocaleString('en-US',{timeZone:'Asia/Beirut',hour12:false,hour:'numeric',minute:'numeric'});
+    const [h,min]=nowBeirut.split(':').map(Number);
+    timeOffsetMs=((target-(h+min/60))*3600e3);
+  }
+}
+const gameNow=()=>new Date(Date.now()+timeOffsetMs);
+function sunPosition(date){ // low-precision solar position for Beirut — plenty for lighting
+  const rad=Math.PI/180, lat=LAT0*rad;
+  const d=date.getTime()/86400000-10957.5;            // days since J2000.0
+  const g=((357.529+0.98560028*d)%360)*rad;           // mean anomaly
+  const q=(280.459+0.98564736*d)%360;                 // mean longitude
+  const L=(q+1.915*Math.sin(g)+0.020*Math.sin(2*g))*rad;
+  const e=(23.439-0.00000036*d)*rad;
+  const RA=Math.atan2(Math.cos(e)*Math.sin(L),Math.cos(L));
+  const dec=Math.asin(Math.sin(e)*Math.sin(L));
+  const GMST=(18.697374558+24.06570982441908*d)%24;
+  const LST=(((GMST+LON0/15)%24)*15)*rad;
+  const H=LST-RA;
+  const el=Math.asin(Math.sin(lat)*Math.sin(dec)+Math.cos(lat)*Math.cos(dec)*Math.cos(H));
+  const az=Math.atan2(Math.sin(H),Math.cos(H)*Math.sin(lat)-Math.tan(dec)*Math.cos(lat))+Math.PI; // from N, clockwise/east
+  return {el,az};
+}
+const SUN={el:0,az:0,dayF:0,lightsOn:1,dusk:0,dir:new THREE.Vector3(0,1,0)};
+function updateSun(){
+  const {el,az}=sunPosition(gameNow());
+  SUN.el=el; SUN.az=az;
+  const elDeg=el*180/Math.PI;
+  SUN.dayF=sstep(-4,9,elDeg);
+  SUN.lightsOn=1-sstep(-4,1,elDeg);      // streetlights wake up around sunset
+  SUN.dusk=Math.exp(-(((elDeg-1)/10)**2));
+  SUN.dir.set(Math.sin(az)*Math.cos(el),Math.sin(el),-Math.cos(az)*Math.cos(el));
+}
+updateSun();
+
+/* land polygon — greater Beirut headland, km. x=east, z=south (north = -z) */
+const COAST=[[-2.9,9.5],[-3.0,6.8],[-3.3,4],[-3.0,2],[-3.3,.6],[-3.1,-.7],[-2.0,-1.0],
+  [-1.2,-1.5],[-.4,-1.7],[1.2,-2.1],[2.4,-1.4],[3.6,-1.7],[6,-2.2],[9.1,-3.8],[10.9,-7],[11.5,-8.5]];
+const LAND=[...COAST,[14,-9],[14,14],[-4.5,14]];
+const ROADS=[
+  COAST.map(([x,z])=>[x+.12,z+.1]),                       // corniche / coastal
+  [[0,-1.5],[-0.8,1.2],[-1.2,3.2],[-1.2,6.2]],            // airport hwy
+  [[0.5,-0.6],[2.4,1.7],[4.8,3.4],[7.5,4.6],[10,5.2]],    // damascus rd
+  [[1.4,-2],[3.7,-2.55],[6.1,-4.5],[9,-6.3]],             // northern hwy
+  [[-2.8,-1.4],[-3.4,0],[-3.2,1.6],[-2.4,2.6]],           // hamra loop
+  [[1.2,-1.6],[1.8,-.2],[1.4,1.2]],
+];
+function inLand(x,z){
+  let inside=false;
+  for(let i=0,j=LAND.length-1;i<LAND.length;j=i++){
+    const xi=LAND[i][0],zi=LAND[i][1],xj=LAND[j][0],zj=LAND[j][1];
+    if(((zi>z)!==(zj>z)) && (x < (xj-xi)*(z-zi)/(zj-zi)+xi)) inside=!inside;
+  }
+  return inside;
+}
+function coastDist(x,z){
+  let d=1e9;
+  for(let i=0;i<COAST.length-1;i++){
+    const ax=COAST[i][0],az=COAST[i][1],bx=COAST[i+1][0],bz=COAST[i+1][1];
+    const dx=bx-ax,dz=bz-az,L2=dx*dx+dz*dz;
+    let t=((x-ax)*dx+(z-az)*dz)/L2; t=clamp(t,0,1);
+    const px=ax+dx*t-x,pz=az+dz*t-z; d=Math.min(d,px*px+pz*pz);
+  }
+  return Math.sqrt(d);
+}
+function terrainH(x,z){
+  if(!inLand(x,z)) return 0;
+  const t=clamp((x-3.2)/8,0,1);
+  if(t<=0) return 0;
+  const cd=clamp(coastDist(x,z)/2.2,0,1);
+  const base=Math.pow(t,1.7)*1500;
+  const ridge=(fbm(x*.32+7,z*.32+3)-.4)*(260+t*1100);
+  return Math.max(0,(base+ridge)*cd*cd);
+}
+const HUBS=[[-3,-.5,1.2,1],[-.5,-1.2,1,.95],[.8,-.2,1.2,1],[2.8,-1.5,1.3,.9],
+  [-1,3.5,1.9,.95],[1.5,1.5,1.6,.8],[3.5,2.5,1.7,.7],[5.5,-4,1.4,.65],[-2.6,1.6,1.4,.85]];
+function density(x,z){
+  let d=0;
+  for(const [hx,hz,s,w] of HUBS){ const q=((x-hx)**2+(z-hz)**2)/(2*s*s); d+=w*Math.exp(-q); }
+  const h=terrainH(x,z);
+  if(h>120) d*=Math.exp(-(h-120)/260);
+  return Math.min(1,d);
+}
+function latLon(x,z){ // x,z meters → lat/lon
+  const lat=LAT0 - (z/KM)/110.574;
+  const lon=LON0 + (x/KM)/(111.320*Math.cos(lat*Math.PI/180));
+  return [lat,lon];
+}
+
+/* =============== renderer / scene =============== */
+const canvas=document.getElementById('c');
+const renderer=new THREE.WebGLRenderer({canvas,antialias:true,powerPreference:'high-performance'});
+renderer.setPixelRatio(Math.min(devicePixelRatio,PERF.pixelRatio));
+renderer.setSize(innerWidth,innerHeight);
+renderer.toneMapping=THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure=1.15;
+
+const scene=new THREE.Scene();
+scene.fog=new THREE.FogExp2(0x04070d,0.000048);
+const camera=new THREE.PerspectiveCamera(58,innerWidth/innerHeight,8,60000);
+
+const msaaTarget=new THREE.WebGLRenderTarget(innerWidth,innerHeight,{samples:PERF.msaa});
+const composer=new EffectComposer(renderer,msaaTarget);
+composer.addPass(new RenderPass(scene,camera));
+const bloom=new UnrealBloomPass(new THREE.Vector2(innerWidth,innerHeight),PERF.lowPower?0.24:0.42,.42,.34);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+
+const ambient=new THREE.AmbientLight(0x0e1626,.9); scene.add(ambient);
+const celestial=new THREE.DirectionalLight(0x9db8e8,.55);   // moon by night, sun by day
+celestial.position.set(-18000,9000,-4000);
+scene.add(celestial);
+const hemi=new THREE.HemisphereLight(0x101a2c,0x1a1208,.35); scene.add(hemi);
+
+/* =============== sky dome =============== */
+{
+  const geo=new THREE.SphereGeometry(46000,32,18);
+  const mat=new THREE.ShaderMaterial({
+    side:THREE.BackSide,depthWrite:false,fog:false,
+    uniforms:{glowDir:{value:new THREE.Vector2(0,1)},uSunDir:{value:new THREE.Vector3(0,1,0)},
+      uDayF:{value:0},uDusk:{value:0}},
+    vertexShader:`varying vec3 vDir; void main(){ vDir=normalize(position);
+      gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`,
+    fragmentShader:`varying vec3 vDir; uniform vec2 glowDir; uniform vec3 uSunDir;
+      uniform float uDayF; uniform float uDusk;
+      void main(){
+        float y=max(vDir.y,0.);
+        // night palette
+        vec3 zen=vec3(.005,.008,.018), mid=vec3(.013,.022,.05), hor=vec3(.05,.06,.085);
+        vec3 night=mix(hor*vec3(.6,.65,.75),mix(mid,zen,smoothstep(.12,.6,y)),smoothstep(.0,.14,y));
+        float toCity=dot(normalize(vDir.xz+vec2(1e-5)),glowDir)*.5+.5;
+        float pol=pow(1.-y,7.)*(.3+.7*toCity);
+        night+=vec3(.12,.072,.026)*pol;
+        night+=vec3(.02,.026,.04)*pow(1.-y,3.);
+        // day palette — hazy mediterranean
+        vec3 dzen=vec3(.10,.27,.62), dhor=vec3(.62,.71,.80);
+        vec3 day=mix(dhor,dzen,smoothstep(.02,.5,y));
+        day+=vec3(.10,.10,.09)*pow(1.-y,4.);                  // coastal haze
+        vec3 col=mix(night,day,uDayF);
+        // sun disc + corona (visible day & twilight)
+        float s=max(dot(vDir,uSunDir),0.);
+        vec3 sunCol=mix(vec3(1.,.97,.9),vec3(1.,.55,.25),uDusk);
+        float vis=max(uDayF,uDusk*.8);
+        col+=sunCol*(pow(s,1500.)*22.+pow(s,110.)*1.2)*vis;
+        // dusk/dawn band toward sun azimuth
+        vec2 sxz=normalize(uSunDir.xz+vec2(1e-5));
+        float toSun=max(dot(normalize(vDir.xz+vec2(1e-5)),sxz),0.);
+        col+=vec3(1.,.38,.13)*pow(toSun,2.5)*pow(1.-y,3.)*uDusk*.9;
+        gl_FragColor=vec4(col,1.);}`
+  });
+  const dome=new THREE.Mesh(geo,mat); dome.name='sky'; scene.add(dome);
+  scene.userData.sky=mat;
+}
+
+/* =============== stars =============== */
+{
+  const n=PERF.starCount, pos=new Float32Array(n*3), col=new Float32Array(n*3), sz=new Float32Array(n);
+  for(let i=0;i<n;i++){
+    const az=rr(0,Math.PI*2), el=Math.acos(rr(.06,1));
+    const r=43000;
+    pos[i*3]=r*Math.sin(el)*Math.cos(az); pos[i*3+1]=r*Math.cos(el); pos[i*3+2]=r*Math.sin(el)*Math.sin(az);
+    const w=rr(.4,1), tint=rnd();
+    col[i*3]=w*(tint<.12?1:.85); col[i*3+1]=w*.88; col[i*3+2]=w*(tint<.7?1:.8);
+    sz[i]=rnd()<.06?rr(2.2,3.4):rr(.7,1.7);
+  }
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.BufferAttribute(pos,3));
+  g.setAttribute('color',new THREE.BufferAttribute(col,3));
+  g.setAttribute('aSize',new THREE.BufferAttribute(sz,1));
+  const m=new THREE.ShaderMaterial({
+    transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,fog:false,
+    uniforms:{uT:{value:0},uNight:{value:1}},
+    vertexShader:`attribute float aSize; attribute vec3 color; varying vec3 vC;
+      uniform float uT;
+      void main(){ vC=color;
+        vec4 mv=modelViewMatrix*vec4(position,1.);
+        float tw=.75+.25*sin(uT*(1.5+fract(position.x)*3.)+position.y);
+        gl_PointSize=aSize*tw; gl_Position=projectionMatrix*mv; }`,
+    fragmentShader:`varying vec3 vC; uniform float uNight;
+      void main(){ float d=length(gl_PointCoord-.5); if(d>.5) discard;
+        float a=smoothstep(.5,.05,d);
+        gl_FragColor=vec4(vC*a*.7*uNight,1.);}`
+  });
+  scene.userData.stars=m;
+  scene.add(new THREE.Points(g,m));
+}
+
+/* =============== moon / sun sprites =============== */
+function discTexture(inner,outer,stops){
+  const cv=document.createElement('canvas'); cv.width=cv.height=128;
+  const ctx=cv.getContext('2d');
+  const grd=ctx.createRadialGradient(64,64,inner,64,64,outer);
+  for(const [o,c] of stops) grd.addColorStop(o,c);
+  ctx.fillStyle=grd; ctx.fillRect(0,0,128,128);
+  return new THREE.CanvasTexture(cv);
+}
+const moonPos=new THREE.Vector3(-30000,14500,-9000);
+let moonSprite;
+{
+  const moonTex=discTexture(2,64,[[0,'rgba(255,252,240,1)'],[.32,'rgba(250,246,230,1)'],
+    [.38,'rgba(190,200,220,.35)'],[1,'rgba(150,170,210,0)']]);
+  moonSprite=new THREE.Sprite(new THREE.SpriteMaterial({map:moonTex,fog:false,
+    blending:THREE.AdditiveBlending,depthWrite:false}));
+  moonSprite.position.copy(moonPos); moonSprite.scale.set(5200,5200,1); scene.add(moonSprite);
+}
+
+/* =============== sea =============== */
+{
+  const geo=new THREE.PlaneGeometry(120000,120000,1,1);
+  const mat=new THREE.ShaderMaterial({
+    fog:false,
+    uniforms:{uT:{value:0},uGlintPos:{value:moonPos.clone()},uCam:{value:new THREE.Vector3()},
+      uDayF:{value:0},uGlintCol:{value:new THREE.Color(.95,.92,.82)},uGlintGain:{value:1}},
+    vertexShader:`varying vec3 vW; void main(){ vec4 w=modelMatrix*vec4(position,1.);
+      vW=w.xyz; gl_Position=projectionMatrix*viewMatrix*w; }`,
+    fragmentShader:`varying vec3 vW; uniform float uT; uniform vec3 uGlintPos; uniform vec3 uCam;
+      uniform float uDayF; uniform vec3 uGlintCol; uniform float uGlintGain;
+      float h(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
+      float n2(vec2 p){ vec2 i=floor(p),f=fract(p); vec2 u=f*f*(3.-2.*f);
+        return mix(mix(h(i),h(i+vec2(1,0)),u.x),mix(h(i+vec2(0,1)),h(i+vec2(1,1)),u.x),u.y); }
+      void main(){
+        float dist=length(vW.xz-uCam.xz);
+        // night water
+        vec3 nDeep=vec3(.004,.008,.016), nHaze=vec3(.022,.032,.05);
+        vec3 night=mix(nDeep,nHaze,smoothstep(3000.,42000.,dist));
+        // day water — mediterranean blue with wave-noise modulation
+        float wav=n2(vW.xz*.004+uT*.06)*.5+n2(vW.xz*.013-uT*.04)*.5;
+        vec3 dDeep=vec3(.012,.075,.16)*(.8+.4*wav), dHaze=vec3(.38,.48,.58);
+        vec3 day=mix(dDeep,dHaze,smoothstep(5000.,40000.,dist));
+        vec3 col=mix(night,day,uDayF);
+        // glint streak toward sun (day) or moon (night)
+        vec2 toM=normalize(uGlintPos.xz-uCam.xz);
+        vec2 toP=vW.xz-uCam.xz;
+        float along=dot(toP,toM);
+        if(along>0.){
+          vec2 perp=toP-toM*along;
+          float w=900.+along*.14;
+          float streak=exp(-pow(length(perp)/w,2.))*smoothstep(800.,6000.,along)*exp(-along/40000.);
+          float sp=n2(vW.xz*.012+vec2(uT*.7,uT*.4))*n2(vW.xz*.03-vec2(uT*.5,uT*.9));
+          col+=uGlintCol*streak*(.3+.9*smoothstep(.55,.95,sp))*uGlintGain;
+        }
+        // city glow spill near shore (night only)
+        float g1=exp(-pow(length(vW.xz-vec2(-1500.,-3200.))/2600.,2.));
+        float g2=exp(-pow(length(vW.xz-vec2(-4800.,1500.))/2200.,2.));
+        float g3=exp(-pow(length(vW.xz-vec2(4500.,-4800.))/2600.,2.));
+        float ripple=.7+.3*n2(vW.xz*.02+uT*.3);
+        col+=vec3(.085,.048,.016)*(g1+g2*.7+g3*.5)*ripple*(1.-uDayF);
+        gl_FragColor=vec4(col,1.);}`
+  });
+  const sea=new THREE.Mesh(geo,mat); sea.rotation.x=-Math.PI/2; sea.position.y=0;
+  scene.add(sea); scene.userData.sea=mat;
+}
+
+/* =============== land mass (procedural fallback ground) =============== */
+let landMesh,landMat;
+{
+  const shape=new THREE.Shape(LAND.map(p=>new THREE.Vector2(p[0]*KM,p[1]*KM)));
+  const g=new THREE.ShapeGeometry(shape);
+  g.rotateX(Math.PI/2);  // shape xy -> xz; normal ends up -Y, so render double-sided
+  landMat=new THREE.MeshBasicMaterial({color:0x0a0c11,side:THREE.DoubleSide,fog:true});
+  landMesh=new THREE.Mesh(g,landMat); landMesh.position.y=6; scene.add(landMesh);
+}
+
+/* =============== mountains =============== */
+let mountainMat,mountainGeo;
+const MNT_OX=2.8+13/2, MNT_OZ=1;
+{
+  const W=13,Hd=26, sx=120,sz=120;
+  const geo=new THREE.PlaneGeometry(W*KM,Hd*KM,sx,sz);
+  geo.rotateX(-Math.PI/2);
+  const pos=geo.attributes.position;
+  for(let i=0;i<pos.count;i++){
+    const x=pos.getX(i)/KM+MNT_OX, z=pos.getZ(i)/KM+MNT_OZ;
+    pos.setY(i,inLand(x,z)?terrainH(x,z):-9);   // sink sea-side skirt below the water plane
+  }
+  geo.computeVertexNormals();
+  // UVs in world space matching the urban-glow canvas rect (x -6..13, z -8..12 km)
+  const uv=new Float32Array(pos.count*2);
+  for(let i=0;i<pos.count;i++){
+    const wx=pos.getX(i)/KM+MNT_OX, wz=pos.getZ(i)/KM+MNT_OZ;
+    uv[i*2]=clamp((wx+6)/19,0,1);
+    uv[i*2+1]=clamp(1-(wz+8)/20,0,1);
+  }
+  geo.setAttribute('uv',new THREE.BufferAttribute(uv,2));
+  mountainMat=new THREE.MeshLambertMaterial({color:0x0c1016,flatShading:false,
+    emissive:0xffffff,emissiveIntensity:.2});
+  mountainGeo=geo;
+  const mesh=new THREE.Mesh(geo,mountainMat);
+  mesh.position.set(MNT_OX*KM,1,MNT_OZ*KM);
+  scene.add(mesh);
+}
+
+/* =============== continuous urban glow (density splat) =============== */
+let glowPlaneMat;
+{
+  const W=320,H=320, X0=-6,X1=13, Z0=-8,Z1=12;
+  const cv=document.createElement('canvas');cv.width=W;cv.height=H;
+  const ctx=cv.getContext('2d');
+  const im=ctx.createImageData(W,H);
+  for(let py=0;py<H;py++)for(let px=0;px<W;px++){
+    const x=X0+(X1-X0)*px/W, z=Z0+(Z1-Z0)*py/H;
+    let v=inLand(x,z)?density(x,z):0;
+    v=Math.pow(v,1.2)*(.35+.65*fbm(x*5.5,z*5.5));
+    const i=(py*W+px)*4;
+    im.data[i]=255*Math.min(1,v*1.05);
+    im.data[i+1]=150*v; im.data[i+2]=56*v;
+    im.data[i+3]=210*Math.min(1,v);
+  }
+  ctx.putImageData(im,0,0);
+  const w2px=(x,z)=>[(x-X0)/(X1-X0)*W,(z-Z0)/(Z1-Z0)*H];
+  ctx.lineWidth=1.7; ctx.strokeStyle='rgba(255,150,50,.5)'; ctx.lineCap='round'; ctx.lineJoin='round';
+  for(const r of ROADS){
+    ctx.beginPath();
+    r.forEach(([x,z],i)=>{const [a,b]=w2px(x,z); i?ctx.lineTo(a,b):ctx.moveTo(a,b);});
+    ctx.stroke();
+  }
+  { const [a,b]=w2px(-1.1,7.8);
+    const g=ctx.createRadialGradient(a,b,1,a,b,9);
+    g.addColorStop(0,'rgba(255,195,115,.85)');g.addColorStop(1,'rgba(255,160,60,0)');
+    ctx.fillStyle=g; ctx.fillRect(a-9,b-9,18,18); }
+  const tex=new THREE.CanvasTexture(cv);
+  tex.colorSpace=THREE.SRGBColorSpace;
+  tex.wrapS=tex.wrapT=THREE.ClampToEdgeWrapping;
+  glowPlaneMat=new THREE.MeshBasicMaterial({map:tex,transparent:true,blending:THREE.AdditiveBlending,
+    depthWrite:false,opacity:.22,fog:false});
+  const plane=new THREE.Mesh(new THREE.PlaneGeometry((X1-X0)*KM,(Z1-Z0)*KM),glowPlaneMat);
+  plane.rotation.x=-Math.PI/2;
+  plane.position.set((X0+X1)/2*KM,16,(Z0+Z1)/2*KM);
+  scene.add(plane);
+  scene.userData.glowTex=tex;
+  // drape the same glow onto the foothills so slopes don't cut dark seams through it
+  mountainMat.emissiveMap=tex; mountainMat.needsUpdate=true;
+}
+
+/* =============== satellite imagery (real Beirut) =============== */
+const satMats=[];
+let satFadeIn=0;
+async function fetchMosaic(z,lonW,lonE,latN,latS,urlFor){
+  const n=2**z;
+  const tx0=Math.floor((lonW+180)/360*n), tx1=Math.floor((lonE+180)/360*n);
+  const lat2y=la=>{const r=la*Math.PI/180;
+    return Math.floor((1-Math.log(Math.tan(r)+1/Math.cos(r))/Math.PI)/2*n);};
+  const ty0=lat2y(latN), ty1=lat2y(latS);
+  const tLon=x=>x/n*360-180;
+  const tLat=y=>Math.atan(Math.sinh(Math.PI*(1-2*y/n)))*180/Math.PI;
+  const west=tLon(tx0), east=tLon(tx1+1), north=tLat(ty0), south=tLat(ty1+1);
+  const cols=tx1-tx0+1, rows=ty1-ty0+1;
+  const cv=document.createElement('canvas'); cv.width=cols*256; cv.height=rows*256;
+  const ctx=cv.getContext('2d');
+  const jobs=[];
+  for(let ty=ty0;ty<=ty1;ty++)for(let tx=tx0;tx<=tx1;tx++)
+    jobs.push(new Promise(res=>{
+      const img=new Image(); img.crossOrigin='anonymous';
+      img.onload=()=>{ try{ctx.drawImage(img,(tx-tx0)*256,(ty-ty0)*256);res(1)}catch(e){res(0)} };
+      img.onerror=()=>res(0);
+      img.src=urlFor(z,tx,ty);
+    }));
+  const got=(await Promise.all(jobs)).reduce((a,b)=>a+b,0);
+  if(got<jobs.length*.7) throw new Error('imagery unavailable');
+  return {cv,ctx,west,east,north,south};
+}
+/* keep photo only over (generous) land + feather all edges — the animated sea owns the water */
+function maskMosaic(mo,featherPx){
+  const {cv,west,east,north,south}=mo;
+  const W=cv.width,H=cv.height;
+  const toPx=(xkm,zkm)=>{
+    const lon=LON0+xkm*KM/M_PER_LON, lat=LAT0-zkm*KM/M_PER_LAT;
+    return [(lon-west)/(east-west)*W,(north-lat)/(north-south)*H];
+  };
+  const m=document.createElement('canvas'); m.width=W; m.height=H;
+  const mc=m.getContext('2d');
+  mc.fillStyle='#fff';
+  mc.beginPath();
+  LAND.forEach(([x,z],i)=>{const [a,b]=toPx(x,z); i?mc.lineTo(a,b):mc.moveTo(a,b);});
+  mc.closePath(); mc.fill();
+  const m2=document.createElement('canvas'); m2.width=W; m2.height=H;
+  const m2c=m2.getContext('2d');
+  m2c.filter=`blur(${featherPx}px)`;
+  m2c.drawImage(m,0,0);
+  // feather the mosaic rectangle border as well
+  m2c.filter='none';
+  m2c.globalCompositeOperation='destination-in';
+  for(const grad of [[0,0,featherPx,0],[W,0,W-featherPx,0],[0,0,0,featherPx],[0,H,0,H-featherPx]]){
+    const g=m2c.createLinearGradient(...grad);
+    g.addColorStop(0,'rgba(0,0,0,0)'); g.addColorStop(1,'#fff');
+    m2c.fillStyle=g; m2c.fillRect(0,0,W,H);
+  }
+  const ctx=mo.ctx;
+  ctx.globalCompositeOperation='destination-in';
+  ctx.drawImage(m2,0,0);
+  ctx.globalCompositeOperation='source-over';
+}
+function mosaicPlane(mo,y){
+  const xW=(mo.west-LON0)*M_PER_LON, xE=(mo.east-LON0)*M_PER_LON;
+  const zN=(LAT0-mo.north)*M_PER_LAT, zS=(LAT0-mo.south)*M_PER_LAT;
+  const tex=new THREE.CanvasTexture(mo.cv);
+  tex.colorSpace=THREE.SRGBColorSpace;
+  tex.anisotropy=renderer.capabilities.getMaxAnisotropy();
+  const mat=new THREE.MeshBasicMaterial({map:tex,fog:true,transparent:true,opacity:0});
+  const plane=new THREE.Mesh(new THREE.PlaneGeometry(xE-xW,zS-zN),mat);
+  plane.rotation.x=-Math.PI/2;
+  plane.position.set((xW+xE)/2,y,(zN+zS)/2);
+  scene.add(plane);
+  satMats.push(mat);
+  return {tex,xW,xE,zN,zS};
+}
+async function loadSatellite(){
+  let urlFor=(z,x,y)=>`https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`;
+  let provider='esri world imagery';
+  if(GOOGLE_MAPS_API_KEY){
+    try{
+      const r=await fetch(`https://tile.googleapis.com/v1/createSession?key=${GOOGLE_MAPS_API_KEY}`,
+        {method:'POST',headers:{'Content-Type':'application/json'},
+         body:JSON.stringify({mapType:'satellite',language:'en-US',region:'LB'})});
+      const s=(await r.json()).session;
+      if(s){ urlFor=(z,x,y)=>`https://tile.googleapis.com/v1/2dtiles/${z}/${x}/${y}?session=${s}&key=${GOOGLE_MAPS_API_KEY}`;
+             provider='google satellite'; }
+    }catch(e){/* fall back to esri */}
+  }
+  // wide base layer (z13, ~16 m/px) + sharp inset over the city core (z15, ~4 m/px)
+  const base=await fetchMosaic(13,35.33,35.64,34.02,33.78,urlFor);
+  maskMosaic(base,16);
+  const b=mosaicPlane(base,5);
+  // drape base imagery on the mountains: move glow to uv1, imagery onto uv
+  const old=mountainGeo.getAttribute('uv');
+  mountainGeo.setAttribute('uv1',old.clone());
+  const pos=mountainGeo.attributes.position;
+  const uv=new Float32Array(pos.count*2);
+  for(let i=0;i<pos.count;i++){
+    const wx=pos.getX(i)+MNT_OX*KM, wz=pos.getZ(i)+MNT_OZ*KM;
+    uv[i*2]=clamp((wx-b.xW)/(b.xE-b.xW),0,1);
+    uv[i*2+1]=clamp(1-(wz-b.zN)/(b.zS-b.zN),0,1);
+  }
+  mountainGeo.setAttribute('uv',new THREE.BufferAttribute(uv,2));
+  const glow2=scene.userData.glowTex.clone(); glow2.channel=1;
+  mountainMat.map=b.tex; mountainMat.emissiveMap=glow2; mountainMat.needsUpdate=true;
+  satFadeIn=0.0001;
+  landMesh.visible=false;
+  // high-res inset — fire and forget so the base shows up fast
+  if(!PERF.lowPower){
+    fetchMosaic(15,35.46,35.56,33.93,33.81,urlFor)
+      .then(inset=>{ maskMosaic(inset,40); mosaicPlane(inset,9); })
+      .catch(()=>{});
+  }
+  return provider;
+}
+
+/* =============== light point clouds =============== */
+const lightMats=[];
+function makeLightCloud(arr,sizeMin,sizeMax,dayMin=0){
+  const n=arr.length;
+  const pos=new Float32Array(n*3), col=new Float32Array(n*3), sz=new Float32Array(n), seed=new Float32Array(n);
+  arr.forEach((p,i)=>{
+    pos[i*3]=p.x; pos[i*3+1]=p.y; pos[i*3+2]=p.z;
+    col[i*3]=p.r; col[i*3+1]=p.g; col[i*3+2]=p.b;
+    sz[i]=p.s??rr(sizeMin,sizeMax); seed[i]=p.fl??rnd();
+  });
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.BufferAttribute(pos,3));
+  g.setAttribute('color',new THREE.BufferAttribute(col,3));
+  g.setAttribute('aSize',new THREE.BufferAttribute(sz,1));
+  g.setAttribute('aSeed',new THREE.BufferAttribute(seed,1));
+  const m=new THREE.ShaderMaterial({
+    transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,fog:false,
+    uniforms:{uT:{value:0},uScale:{value:innerHeight*.85},uNight:{value:1},uDayMin:{value:dayMin}},
+    vertexShader:`attribute float aSize; attribute float aSeed; attribute vec3 color;
+      varying vec3 vC; varying float vFade; uniform float uT; uniform float uScale;
+      void main(){
+        vec4 mv=modelViewMatrix*vec4(position,1.);
+        float d=-mv.z;
+        float fl=.9+.1*sin(uT*(1.+aSeed*4.)+aSeed*120.);
+        vC=color*fl;
+        vFade=exp(-d*.00004);
+        float px=aSize*uScale/d;
+        gl_PointSize=clamp(px,1.5,26.);
+        gl_Position=projectionMatrix*mv; }`,
+    fragmentShader:`varying vec3 vC; varying float vFade;
+      uniform float uNight; uniform float uDayMin;
+      void main(){
+        vec2 q=gl_PointCoord-.5; float d=length(q); if(d>.5) discard;
+        float on=mix(uDayMin,1.,uNight);
+        if(on<.01) discard;
+        float core=smoothstep(.5,.0,d);
+        core=pow(core,1.5)*1.35;
+        gl_FragColor=vec4(vC*core*vFade*on,1.);}`
+  });
+  lightMats.push(m);
+  return new THREE.Points(g,m);
+}
+
+/* street lights */
+{
+  const pts=[];
+  const PALETTE=[
+    [1,.62,.23,.62],[1,.79,.5,.2],[.78,.88,1,.13],[.62,1,.7,.03],[1,.45,.85,.02],
+  ];
+  let tries=0;
+  while(pts.length<PERF.streetLightCount && tries<PERF.streetLightCount*35){
+    tries++;
+    const x=rr(-5.5,12), z=rr(-7,10);
+    if(!inLand(x,z)) continue;
+    if(rnd()>density(x,z)) continue;
+    let cr=rnd(), pal=PALETTE[0];
+    for(const p of PALETTE){ if(cr<p[3]){pal=p;break;} cr-=p[3]; }
+    const b=rr(.7,1.55);
+    pts.push({x:x*KM+rr(-18,18), y:terrainH(x,z)+rr(9,15), z:z*KM+rr(-18,18),
+      r:pal[0]*b,g:pal[1]*b,b:pal[2]*b});
+  }
+  scene.add(makeLightCloud(pts,7,15));
+}
+
+/* buildings + lit windows */
+const buildings=[];
+let buildingMat;
+{
+  const geo=new THREE.BoxGeometry(1,1,1); geo.translate(0,.5,0);
+  buildingMat=new THREE.MeshLambertMaterial({color:0x0b0e15});
+  const COUNT=PERF.buildingCount;
+  const inst=new THREE.InstancedMesh(geo,buildingMat,COUNT);
+  const M=new THREE.Matrix4(), Q=new THREE.Quaternion(), S=new THREE.Vector3(), P=new THREE.Vector3();
+  let placed=0,tries=0;
+  while(placed<COUNT&&tries<COUNT*160){
+    tries++;
+    const x=rr(-5,7), z=rr(-3.5,6);
+    const d=density(x,z);
+    if(!inLand(x,z)||rnd()>d*1.1) continue;
+    if(terrainH(x,z)>140) continue;
+    if(coastDist(x,z)<.22) continue;        // keep boxes off the beach/photo-water
+    const w=rr(14,42), dep=rr(14,42);
+    let h=rr(14,40)+d*rr(0,34);
+    if(rnd()<.025) h=rr(90,160);
+    P.set(x*KM,terrainH(x,z),z*KM);
+    Q.setFromAxisAngle(new THREE.Vector3(0,1,0),rr(0,Math.PI));
+    S.set(w,h,dep);
+    M.compose(P,Q,S); inst.setMatrixAt(placed,M);
+    buildings.push({x:x*KM,z:z*KM,h,w,base:terrainH(x,z)});
+    placed++;
+  }
+  inst.count=placed; scene.add(inst);
+
+  const wpts=[];
+  for(const b of buildings){
+    const nWin=Math.floor(b.h/7*rr(.8,2));
+    for(let i=0;i<nWin;i++){
+      const side=rnd()<.5?1:-1, axis=rnd()<.5;
+      const wx=b.x+(axis?side*b.w*.52:rr(-b.w*.4,b.w*.4));
+      const wz=b.z+(axis?rr(-b.w*.4,b.w*.4):side*b.w*.52);
+      const warm=rnd()<.7;
+      const br=rr(.4,1.1);
+      wpts.push({x:wx,y:b.base+rr(9,b.h+7),z:wz,
+        r:(warm?1:.7)*br,g:(warm?.82:.82)*br,b:(warm?.55:1)*br});
+    }
+  }
+  scene.add(makeLightCloud(wpts,3.2,5.5));
+}
+
+/* arterial roads — strings of sodium lights */
+{
+  const pts=[];
+  function road(waypoints,spacing=26,jitter=5,bright=1){
+    const v=waypoints.map(p=>new THREE.Vector3(p[0]*KM,0,p[1]*KM));
+    const curve=new THREE.CatmullRomCurve3(v);
+    const L=curve.getLength(); const n=Math.floor(L/spacing);
+    for(let i=0;i<=n;i++){
+      const p=curve.getPointAt(i/n);
+      const xk=p.x/KM,zk=p.z/KM;
+      if(!inLand(xk,zk)) continue;
+      const b=rr(.65,1)*bright;
+      pts.push({x:p.x+rr(-jitter,jitter),y:terrainH(xk,zk)+11,z:p.z+rr(-jitter,jitter),
+        r:1*b,g:.6*b,b:.21*b,s:rr(8,13)});
+    }
+  }
+  const SPACING=[24,26,28,26,30,30], BRIGHT=[1.15,1.1,.95,1.05,.9,.85];
+  ROADS.forEach((wp,i)=>road(wp,SPACING[i],4,BRIGHT[i]));
+  scene.add(makeLightCloud(pts,8,12));
+}
+
+/* mountain village lights */
+{
+  const pts=[];
+  let tries=0;
+  while(pts.length<PERF.villageLightCount&&tries<PERF.villageLightCount*80){
+    tries++;
+    const x=rr(3.5,14),z=rr(-8,12);
+    const h=terrainH(x,z);
+    if(h<120||h>1250) continue;
+    if(rnd()>.3+.7*vnoise(x*.8,z*.8)) continue;
+    if(rnd()>.42) continue;
+    const b=rr(.4,1);
+    pts.push({x:x*KM+rr(-30,30),y:h+rr(4,10),z:z*KM+rr(-30,30),r:1*b,g:.68*b,b:.3*b});
+  }
+  for(let i=0;i<7;i++){
+    const x=rr(6,13),z=rr(-6,9); const h=terrainH(x,z);
+    if(h<400) continue;
+    pts.push({x:x*KM,y:h+rr(60,110),z:z*KM,r:1.6,g:.08,b:.08,s:14,fl:0.001+i*.13});
+  }
+  scene.add(makeLightCloud(pts,4.5,8));
+}
+
+/* airport — matched to the real RHIA runway position on the imagery */
+const strobeLights=[];
+const RWX=-1.2, RWZ0=6.7, RWZ1=9.0;       // runway 16/34: lat 33.833→33.812, lon ~35.489
+{
+  const pts=[];
+  for(let z=RWZ0;z<=RWZ1;z+=.062){
+    pts.push({x:(RWX-.028)*KM,y:13,z:z*KM,r:.95,g:.95,b:.85,s:7});
+    pts.push({x:(RWX+.028)*KM,y:13,z:z*KM,r:.95,g:.95,b:.85,s:7});
+  }
+  for(let i=0;i<8;i++){
+    pts.push({x:(RWX-.026+i*.0075)*KM,y:13,z:RWZ0*KM,r:.1,g:1.2,b:.25,s:8});
+    pts.push({x:(RWX-.026+i*.0075)*KM,y:13,z:RWZ1*KM,r:1.3,g:.12,b:.1,s:8});
+  }
+  for(let z=RWZ0+.15;z<RWZ1-.15;z+=.11){
+    pts.push({x:RWX*KM,y:13,z:z*KM,r:.8,g:.8,b:.75,s:5});
+    pts.push({x:(RWX+.075)*KM,y:13,z:z*KM,r:.25,g:.45,b:1.1,s:6});
+  }
+  for(let i=0;i<14;i++)
+    pts.push({x:(RWX+rr(.12,.3))*KM,y:14,z:rr(RWZ0+.3,RWZ1-.6)*KM,r:1.3,g:.85,b:.5,s:rr(14,22)});
+  scene.add(makeLightCloud(pts,5,8,.35));   // airport lights stay partly on by day
+
+  const stTex=discTexture(2,64,[[0,'rgba(255,255,255,1)'],[.25,'rgba(220,235,255,.8)'],[1,'rgba(180,200,255,0)']]);
+  for(let i=0;i<14;i++){
+    const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:stTex,fog:false,
+      blending:THREE.AdditiveBlending,depthWrite:false,opacity:0}));
+    sp.position.set(RWX*KM,13,(RWZ0-.1-i*.1)*KM);
+    sp.scale.set(110,110,1); scene.add(sp);
+    strobeLights.push({sp,i});
+  }
+}
+
+/* harbor boats */
+{
+  const pts=[];
+  for(let i=0;i<46;i++)
+    pts.push({x:rr(-2200,-700),y:4,z:rr(-3400,-2700),r:.8,g:.78,b:.7,s:rr(4,6)});
+  scene.add(makeLightCloud(pts,4,6,.2));
+}
+const ships=[];
+{
+  const tex=discTexture(2,64,[[0,'rgba(255,240,210,1)'],[1,'rgba(255,220,160,0)']]);
+  for(let i=0;i<3;i++){
+    const g=new THREE.Group();
+    const a=new THREE.Sprite(new THREE.SpriteMaterial({map:tex,fog:false,blending:THREE.AdditiveBlending,depthWrite:false}));
+    a.scale.set(70,70,1); g.add(a);
+    const b=a.clone(); b.position.x=40; g.add(b);
+    g.position.set(rr(-14000,-4000),6,rr(-16000,-6000));
+    g.userData={vx:rr(-6,6)||3,vz:rr(-4,4)||2};
+    scene.add(g); ships.push(g);
+  }
+}
+
+/* clouds + fast haze wisps */
+const clouds=[], hazeWisps=[];
+let cloudTex;
+{
+  const cv=document.createElement('canvas');cv.width=cv.height=256;
+  const cx=cv.getContext('2d');
+  { const g=cx.createRadialGradient(128,128,4,128,128,124);
+    g.addColorStop(0,'rgba(255,255,255,.5)');
+    g.addColorStop(.45,'rgba(255,255,255,.3)');
+    g.addColorStop(1,'rgba(255,255,255,0)');
+    cx.fillStyle=g;cx.fillRect(0,0,256,256); }
+  cloudTex=new THREE.CanvasTexture(cv);
+  for(let i=0;i<PERF.cloudCount;i++){
+    const m=new THREE.SpriteMaterial({map:cloudTex,fog:false,transparent:true,
+      opacity:rr(.14,.26),color:0x26252c,depthWrite:false});
+    const sp=new THREE.Sprite(m);
+    sp.position.set(rr(-12,12)*KM,rr(1700,2600),rr(-12,12)*KM);
+    sp.scale.set(rr(2800,5600),rr(900,1600),1);
+    sp.userData={baseOp:m.opacity};
+    scene.add(sp);clouds.push(sp);
+  }
+  // low fast haze — whips past the FPV camera on the wind
+  for(let i=0;i<PERF.hazeCount;i++){
+    const m=new THREE.SpriteMaterial({map:cloudTex,fog:false,transparent:true,
+      opacity:rr(.05,.13),color:0x1d1d24,depthWrite:false});
+    const sp=new THREE.Sprite(m);
+    sp.position.set(rr(-9,9)*KM,rr(260,950),rr(-8,9)*KM);
+    sp.scale.set(rr(420,1500),rr(140,420),1);
+    sp.userData={baseOp:m.opacity,mult:rr(2.2,4.2)};
+    scene.add(sp);hazeWisps.push(sp);
+  }
+}
+
+/* =============== wind =============== */
+const WIND={dir:rr(4.2,5.2),speed:rr(5,11),t:rr(0,100),gust:0,vx:0,vz:0};
+function updateWind(dt){
+  WIND.t+=dt;
+  WIND.gust=fbm(WIND.t*.045,3.37);
+  WIND.dir+=(vnoise(WIND.t*.01,8.8)-.5)*dt*.06;
+  const eff=WIND.speed*(.55+.95*WIND.gust);
+  WIND.vx=Math.sin(WIND.dir)*eff; WIND.vz=-Math.cos(WIND.dir)*eff;
+}
+function windHUD(){
+  const kt=Math.round(WIND.speed*(.55+.95*WIND.gust)*1.944);
+  let deg=Math.round(WIND.dir*180/Math.PI)%360; if(deg<0)deg+=360;
+  return `WND ${kt}kt ${String(deg).padStart(3,'0')}°`;
+}
+
+/* =============== drones =============== */
+const droneTexRed=discTexture(2,64,[[0,'rgba(255,70,70,1)'],[1,'rgba(255,40,40,0)']]);
+const droneTexGreen=discTexture(2,64,[[0,'rgba(80,255,120,1)'],[1,'rgba(40,255,90,0)']]);
+const droneTexWhite=discTexture(2,64,[[0,'rgba(255,255,255,1)'],[1,'rgba(255,255,255,0)']]);
+
+const DRONE_DEFS=[
+  {cs:'KESTREL-9', freq:'2.412 GHz', enc:'AES-128-CTR'},
+  {cs:'SARAB-1',   freq:'5.825 GHz', enc:'AES-256-GCM'},
+  {cs:'NIGHTJAR-4',freq:'2.437 GHz', enc:'WPA2-PSK'},
+  {cs:'RAAD-3',    freq:'5.745 GHz', enc:'AES-128-CTR'},
+  {cs:'HUDHUD-6',  freq:'2.462 GHz', enc:'XTEA-64'},
+  {cs:'ZENITH-2',  freq:'5.805 GHz', enc:'AES-128-CBC'},
+];
+const drones=[];
+class Drone{
+  constructor(def,idx){
+    this.def=def; this.idx=idx;
+    this.group=new THREE.Group();
+    const body=new THREE.Mesh(new THREE.BoxGeometry(3.4,1.1,3.4),
+      new THREE.MeshLambertMaterial({color:0x12151c}));
+    this.group.add(body);
+    const armG=new THREE.BoxGeometry(11,.4,.7);
+    for(const a of [Math.PI/4,-Math.PI/4]){
+      const arm=new THREE.Mesh(armG,body.material.clone());
+      arm.rotation.y=a; this.group.add(arm);
+    }
+    this.rotors=[];
+    const rotG=new THREE.CircleGeometry(2.6,18);
+    const rotM=new THREE.MeshBasicMaterial({color:0x10131a,transparent:true,opacity:.4,side:THREE.DoubleSide});
+    for(const [sx,sz] of [[1,1],[1,-1],[-1,1],[-1,-1]]){
+      const r=new THREE.Mesh(rotG,rotM);
+      r.rotation.x=-Math.PI/2;
+      r.position.set(sx*3.9,0.75,sz*3.9);
+      this.group.add(r); this.rotors.push(r);
+    }
+    const gimbal=new THREE.Mesh(new THREE.SphereGeometry(.9,10,8),
+      new THREE.MeshLambertMaterial({color:0x0a0c10}));
+    gimbal.position.set(0,-1.1,1.1); this.group.add(gimbal);
+
+    this.sRed=new THREE.Sprite(new THREE.SpriteMaterial({map:droneTexRed,fog:false,blending:THREE.AdditiveBlending,depthWrite:false}));
+    this.sRed.position.set(-3.9,.6,-3.9); this.sRed.scale.set(14,14,1); this.group.add(this.sRed);
+    this.sGreen=new THREE.Sprite(new THREE.SpriteMaterial({map:droneTexGreen,fog:false,blending:THREE.AdditiveBlending,depthWrite:false}));
+    this.sGreen.position.set(3.9,.6,-3.9); this.sGreen.scale.set(14,14,1); this.group.add(this.sGreen);
+    this.sWhite=new THREE.Sprite(new THREE.SpriteMaterial({map:droneTexWhite,fog:false,blending:THREE.AdditiveBlending,depthWrite:false,opacity:0}));
+    this.sWhite.position.set(0,-.8,-1.6); this.sWhite.scale.set(15,15,1); this.group.add(this.sWhite);
+
+    this.group.scale.setScalar(3.4);
+
+    this.hit=new THREE.Mesh(new THREE.SphereGeometry(28,8,6),
+      new THREE.MeshBasicMaterial({colorWrite:false,depthWrite:false}));
+    this.hit.userData.drone=this;
+    this.group.add(this.hit);
+
+    const cx=rr(-2.5,3),cz=rr(-1.5,4);
+    const pts=[];
+    const nP=6, baseR=rr(1.2,2.6), alt=rr(380,760);
+    for(let i=0;i<nP;i++){
+      const a=i/nP*Math.PI*2;
+      const r=baseR*rr(.7,1.3);
+      let px=cx+Math.cos(a)*r, pz=cz+Math.sin(a)*r*rr(.6,1);
+      px=clamp(px,-4,6); pz=clamp(pz,-3,6.5);
+      pts.push(new THREE.Vector3(px*KM,alt+rr(-70,70),pz*KM));
+    }
+    this.path=new THREE.CatmullRomCurve3(pts,true,'centripetal');
+    this.pathLen=this.path.getLength();
+    this.u=rnd();
+    this.speed=rr(11,19);
+    this.pos=this.path.getPointAt(this.u).clone();
+    this.yaw=0;
+    this.vel=new THREE.Vector3();
+    this.battery=rr(64,96);
+    this.controlled=false;
+    this.blend=0;
+    this.strobeT=rr(0,2);
+    this.group.position.copy(this.pos);
+    scene.add(this.group);
+  }
+  update(dt,t){
+    this.strobeT+=dt;
+    const st=this.strobeT%2;
+    this.sRed.material.opacity=(st%1)<.5?1:.25;
+    this.sGreen.material.opacity=(st%1)<.5?.25:1;
+    this.sWhite.material.opacity=(st<.08||((st>.18)&&st<.26))?1:0;
+    for(const r of this.rotors) r.rotation.z+=dt*(40+this.idx*3);
+
+    if(this.controlled){
+      this.blend=Math.min(1,this.blend+dt*2);
+    }else if(this.blend>0){
+      this.blend=Math.max(0,this.blend-dt/4);
+      const target=this.path.getPointAt(this.u);
+      this.pos.lerp(target,1-Math.pow(this.blend,1.5));
+      this.u=(this.u+this.speed*dt/this.pathLen)%1;
+      if(this.blend===0) this.pos.copy(this.path.getPointAt(this.u));
+    }else{
+      this.u=(this.u+this.speed*dt/this.pathLen)%1;
+      this.pos.copy(this.path.getPointAt(this.u));
+      const tan=this.path.getTangentAt(this.u);
+      const targetYaw=Math.atan2(tan.x,tan.z);
+      let dy=targetYaw-this.yaw;
+      while(dy>Math.PI)dy-=Math.PI*2; while(dy<-Math.PI)dy+=Math.PI*2;
+      this.yaw+=dy*Math.min(1,dt*1.5);
+    }
+    this.group.position.copy(this.pos);
+    this.group.rotation.y=this.yaw;
+    this.battery=Math.max(11,this.battery-dt*(this.controlled?.022:.006));
+  }
+}
+DRONE_DEFS.forEach((d,i)=>drones.push(new Drone(d,i)));
+if(!SHOW_SIM_CONTACTS) drones.forEach(d=>d.group.visible=false);
+
+/* =============== airliner on approach (to the real runway) =============== */
+const airliner=new THREE.Group();
+{
+  const r=new THREE.Sprite(new THREE.SpriteMaterial({map:droneTexRed,fog:false,blending:THREE.AdditiveBlending,depthWrite:false}));
+  r.position.set(-18,0,0); r.scale.set(40,40,1); airliner.add(r);
+  const g=new THREE.Sprite(new THREE.SpriteMaterial({map:droneTexGreen,fog:false,blending:THREE.AdditiveBlending,depthWrite:false}));
+  g.position.set(18,0,0); g.scale.set(40,40,1); airliner.add(g);
+  const land=new THREE.Sprite(new THREE.SpriteMaterial({map:droneTexWhite,fog:false,blending:THREE.AdditiveBlending,depthWrite:false}));
+  land.position.set(0,-3,8); land.scale.set(120,120,1); airliner.add(land);
+  const strobe=new THREE.Sprite(new THREE.SpriteMaterial({map:droneTexWhite,fog:false,blending:THREE.AdditiveBlending,depthWrite:false,opacity:0}));
+  strobe.scale.set(60,60,1); airliner.add(strobe);
+  airliner.userData.strobe=strobe;
+  airliner.visible=false;
+  scene.add(airliner);
+}
+let airlinerT=-20;
+function updateAirliner(dt,t){
+  airlinerT+=dt;
+  if(airlinerT<0){ airliner.visible=false; return; }
+  const DUR=85;
+  if(airlinerT>DUR){ airlinerT=-rr(40,90); return; }
+  const k=airlinerT/DUR;
+  airliner.visible=true;
+  airliner.position.set(
+    lerp(-1.0*KM,RWX*KM,k),
+    lerp(900,30,k*k*.2+k*.8),
+    lerp(-14*KM,RWZ0*KM,k));
+  airliner.userData.strobe.material.opacity=(t%1.1)<.06?1:0;
+}
+
+/* =============== camera rigs =============== */
+const ORBIT={az:.78,pol:1.08,r:7900,tx:-300,tz:300,idle:0};
+function observerCam(dt){
+  ORBIT.idle+=dt;
+  if(ORBIT.idle>6) ORBIT.az+=dt*.012;
+  const y=Math.cos(ORBIT.pol)*ORBIT.r;
+  const rr_=Math.sin(ORBIT.pol)*ORBIT.r;
+  camera.position.set(ORBIT.tx+Math.cos(ORBIT.az)*rr_, Math.max(y,240), ORBIT.tz+Math.sin(ORBIT.az)*rr_);
+  camera.lookAt(ORBIT.tx,0,ORBIT.tz);
+}
+const FPV={drone:null, gimbalPitch:-.42, gimbalYaw:0, vibSeed:0, dragging:false};
+
+/* =============== input =============== */
+const keys={};
+addEventListener('keydown',e=>{
+  keys[e.code]=true;
+  if(e.repeat) return;                       // held keys must not re-fire state actions
+  if(e.code==='KeyM'){ return; }
+  if(e.code==='KeyT'&&state!=='BOOT'){ cycleSimClock(); return; }
+  if(SHOW_SIM_CONTACTS&&state==='INTERCEPT'&&e.code==='KeyH') startHack();
+  if(state==='HACKING'){ if(e.code==='Escape'){abortHack();return;} hackKey(e.key.toUpperCase()); return; }
+  if((state==='INTERCEPT'||state==='CONTROL')&&e.code==='Escape') disconnect();
+});
+addEventListener('keyup',e=>keys[e.code]=false);
+
+let pDown=null;
+canvas.addEventListener('pointerdown',e=>{
+  pDown={x:e.clientX,y:e.clientY,t:performance.now(),state};
+  if(state==='CONTROL') FPV.dragging=true;
+  canvas.setPointerCapture(e.pointerId);
+});
+canvas.addEventListener('pointermove',e=>{
+  if(!pDown){ if(state==='OBSERVER') hoverScan(e); return; }
+  const dx=e.movementX,dy=e.movementY;
+  if(state==='OBSERVER'&&pDown.state==='OBSERVER'){
+    ORBIT.az+=dx*.0035; ORBIT.pol=clamp(ORBIT.pol-dy*.003,.55,1.32); ORBIT.idle=0;
+  }else if(state==='CONTROL'&&FPV.dragging){
+    FPV.gimbalYaw=clamp(FPV.gimbalYaw-dx*.0022,-1.2,1.2);
+    FPV.gimbalPitch=clamp(FPV.gimbalPitch-dy*.0022,-1.45,.3);
+  }
+});
+canvas.addEventListener('pointerup',e=>{
+  FPV.dragging=false;
+  if(pDown&&state==='OBSERVER'&&pDown.state==='OBSERVER'){
+    const moved=Math.hypot(e.clientX-pDown.x,e.clientY-pDown.y);
+    if(moved<6&&performance.now()-pDown.t<400) tryClickDrone(e);
+  }
+  pDown=null;
+});
+canvas.addEventListener('wheel',e=>{
+  if(state!=='OBSERVER')return;
+  ORBIT.r=clamp(ORBIT.r*(1+Math.sign(e.deltaY)*.09),2600,13000); ORBIT.idle=0;
+},{passive:true});
+
+const ray=new THREE.Raycaster();
+const mouseN=new THREE.Vector2();
+let hovered=null;
+function hoverScan(e){
+  if(!SHOW_SIM_CONTACTS){ hovered=null; document.body.style.cursor='crosshair'; return; }
+  mouseN.set(e.clientX/innerWidth*2-1,-(e.clientY/innerHeight)*2+1);
+  ray.setFromCamera(mouseN,camera);
+  const hits=ray.intersectObjects(drones.map(d=>d.hit),false);
+  hovered=hits.length?hits[0].object.userData.drone:null;
+  document.body.style.cursor=hovered?'pointer':'crosshair';
+}
+function tryClickDrone(e){
+  if(!SHOW_SIM_CONTACTS) return;
+  hoverScan(e);
+  if(hovered) intercept(hovered);
+}
+
+/* =============== UI helpers =============== */
+const $=id=>document.getElementById(id);
+const bracket=$('bracket'), bracketTag=bracket.querySelector('.tag');
+const toastBox=$('toast');
+function toast(msg,green){
+  const d=document.createElement('div');
+  d.className='toastmsg'+(green?' green':'');
+  d.textContent=msg;
+  toastBox.appendChild(d);
+  setTimeout(()=>d.remove(),4100);
+}
+const V=new THREE.Vector3(), CAMDIR=new THREE.Vector3();
+function projectToScreen(p){
+  camera.getWorldDirection(CAMDIR);
+  V.copy(p).sub(camera.position);
+  if(V.dot(CAMDIR)<=0) return null;
+  V.copy(p).project(camera);
+  return [(V.x*.5+.5)*innerWidth,(-V.y*.5+.5)*innerHeight];
+}
+
+const contactRows=[];
+{
+  const panel=$('contacts');
+  drones.forEach(d=>{
+    const row=document.createElement('div');
+    row.className='contact';
+    row.innerHTML=`<span class="cs">▸ ${d.def.cs}</span><span class="alt"></span><span class="sig"></span>`;
+    row.onclick=()=>{ if(state==='OBSERVER') intercept(d); };
+    row.onmouseenter=()=>{ d.listHot=true; };
+    row.onmouseleave=()=>{ d.listHot=false; };
+    panel.appendChild(row);
+    contactRows.push(row);
+  });
+}
+
+/* AR drone markers */
+const markEls=[];
+{
+  const wrap=$('marks');
+  drones.forEach(d=>{
+    const el=document.createElement('div');
+    el.className='dmark';
+    el.innerHTML=`<div class="stem"></div><div class="dia"></div><div class="lbl">${d.def.cs}<i></i></div>`;
+    el._alt=el.querySelector('i');
+    el.onclick=()=>{ if(state==='OBSERVER') intercept(d); };
+    el.onmouseenter=()=>{ d.listHot=true; };
+    el.onmouseleave=()=>{ d.listHot=false; };
+    wrap.appendChild(el);
+    markEls.push(el);
+  });
+}
+function hideMarks(){ for(const el of markEls) el.style.display='none'; }
+
+/* grain texture */
+{
+  const cv=document.createElement('canvas');cv.width=cv.height=160;
+  const ctx=cv.getContext('2d');
+  const im=ctx.createImageData(160,160);
+  for(let i=0;i<im.data.length;i+=4){
+    const v=Math.random()*255|0;
+    im.data[i]=im.data[i+1]=im.data[i+2]=v; im.data[i+3]=255;
+  }
+  ctx.putImageData(im,0,0);
+  const g=$('grain');
+  g.style.backgroundImage=`url(${cv.toDataURL()})`;
+  setInterval(()=>{
+    g.style.backgroundPosition=`${Math.random()*160|0}px ${Math.random()*160|0}px`;
+  },50);
+}
+
+/* =============== disabled notification hooks =============== */
+function blip(){ return; }
+function staticBurst(){ return; }
+function successChord(){ return; }
+
+/* =============== sim clock =============== */
+function cycleSimClock(){
+  timeOffsetMs+=2*3600e3;
+  if(timeOffsetMs>=24*3600e3) timeOffsetMs=0;
+  const h=Math.round(timeOffsetMs/3600e3);
+  toast(h===0?'CLOCK: REAL TIME — BEIRUT':'CLOCK: SIM +'+h+'H');
+}
+
+/* =============== state machine =============== */
+let state='BOOT';
+
+function setChrome(on){
+  for(const id of ['topbar','hint','contacts','threatPanel']) $(id).classList.toggle('on',on);
+}
+function glitchFX(){ const g=$('glitch'); g.classList.remove('go'); void g.offsetWidth; g.classList.add('go'); }
+
+function intercept(d){
+  state='INTERCEPT';
+  FPV.drone=d; FPV.gimbalPitch=-.42; FPV.gimbalYaw=0; FPV.dragging=false;
+  pDown=null;
+  setChrome(false);
+  bracket.style.display='none';
+  hideMarks();
+  $('warnbox').style.display='none';
+  $('fpvfx').classList.remove('obs');
+  glitchFX(); staticBurst(.35); blip(660,.08);
+  setTimeout(()=>{
+    if(state==='OBSERVER'||FPV.drone!==d) return;
+    $('hud').classList.add('on'); $('hud').classList.remove('ctl');
+    $('fpvfx').classList.add('on');
+    $('h-uav').textContent='UAV: '+d.def.cs;
+    $('h-mode').textContent='MODE: INTERCEPT · VIEW-ONLY';
+    $('h-enc').textContent='ENC: '+d.def.enc;
+    $('h-op').textContent='OPERATOR: UNIDENTIFIED · FREQ '+d.def.freq;
+    $('h-keys').textContent='[ESC] DROP FEED';
+    $('hackprompt').style.display=(state==='INTERCEPT')?'block':'none';
+    toast('DETAIL VIEW — '+d.def.cs);
+  },240);
+}
+function disconnect(){
+  const d=FPV.drone;
+  if(d){ d.controlled=false; }
+  state='OBSERVER';
+  FPV.drone=null; FPV.dragging=false; pDown=null;
+  glitchFX(); staticBurst(.3);
+  $('hud').classList.remove('on');
+  $('hud').classList.remove('glitch'); $('fpvfx').classList.remove('glitch');
+  $('fpvfx').classList.add('on','obs');     // observer keeps a softer sensor stack
+  canvas.classList.remove('glitchy');
+  $('warnbox').style.display='none';
+  $('term').classList.remove('on');
+  setChrome(true);
+  toast(d&&d.wasHacked?'C2 LINK TERMINATED — '+d.def.cs+' RESUMING PATROL':'FEED DROPPED');
+}
+
+/* =============== disabled legacy sequence =============== */
+const termBody=$('termbody'), keyseq=$('keyseq'), keytimer=$('keytimer');
+let hackLines=[],hackLineIdx=0,hackTimer=0,hackPhase='';
+let seqKeys=[],seqIdx=0,seqDeadline=0;
+
+function startHack(){
+  toast('CONTROL SIMULATION DISABLED IN DRONEWATCH MVP');
+  return;
+  if(state!=='INTERCEPT')return;
+  state='HACKING';
+  $('hackprompt').style.display='none';
+  $('term').classList.add('on');
+  $('termtarget').textContent='TGT: '+FPV.drone.def.cs+' · '+FPV.drone.def.freq;
+  termBody.innerHTML='';
+  keyseq.style.display='none';
+  keyseq.innerHTML='';
+  const d=FPV.drone.def;
+  hackLines=[
+    ['p','> alert-detail --event '+d.cs.toLowerCase()],
+    ['','  source review · stale check · confidence check'],
+    ['p','> provenance --deep'],
+    ['','  source  : legacy simulation contact'],
+    ['','  status  : disabled for civilian MVP'],
+    ['ok','  no operational control path available'],
+    ['err','  DETAIL REVIEW ONLY'],
+  ];
+  hackLineIdx=0;hackTimer=0;hackPhase='typing';
+  blip(880,.06);
+}
+function abortHack(){
+  state='INTERCEPT';
+  hackPhase='';
+  $('term').classList.remove('on');
+  $('hackprompt').style.display='block';
+  toast('DETAIL CLOSED');
+}
+function spawnKeySeq(){
+  const POOL='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  seqKeys=[];seqIdx=0;
+  keyseq.innerHTML='';
+  for(let i=0;i<4;i++){
+    const k=POOL[Math.random()*POOL.length|0];
+    seqKeys.push(k);
+    const el=document.createElement('div');el.className='k';el.textContent=k;
+    keyseq.appendChild(el);
+  }
+  keyseq.style.display='flex';
+  seqDeadline=performance.now()+12000;
+  hackPhase='keys';
+}
+function hackKey(k){
+  if(hackPhase==='typing'){ hackTimer+=120; return; }   // any key fast-forwards the typeout
+  if(hackPhase!=='keys'||!/^[A-Z0-9]$/.test(k))return;
+  const cells=keyseq.children;
+  if(k===seqKeys[seqIdx]){
+    cells[seqIdx].classList.add('hit');
+    blip(1100+seqIdx*150,.05,'square',.05);
+    seqIdx++;
+    if(seqIdx>=seqKeys.length) hackSuccess();
+  }else{
+    blip(190,.12,'sawtooth',.06);
+    for(const c of cells)c.classList.remove('hit');
+    cells[seqIdx]?.classList.add('miss');
+    setTimeout(()=>{for(const c of cells)c.classList.remove('miss');},260);
+    seqIdx=0;
+  }
+}
+function hackSuccess(){
+  hackPhase='done';
+  keyseq.style.display='none';
+  appendTerm('ok','\n  ✓ DETAIL ACKNOWLEDGED');
+  appendTerm('ok','  RETURNING TO PUBLIC ALERT VIEW…');
+  successChord();
+  setTimeout(()=>{
+    if(state!=='HACKING'||!FPV.drone) return;
+    $('term').classList.remove('on');
+    state='CONTROL';
+    const d=FPV.drone;
+    d.controlled=true; d.wasHacked=true;
+    d.vel.set(0,0,0);
+    $('hud').classList.add('ctl');
+    $('h-mode').textContent='MODE: REVIEW';
+    $('h-enc').textContent='SOURCE: REVIEWED';
+    $('h-keys').textContent='W/S FWD · A/D YAW · Q/E STRAFE · R/F ALT · DRAG GIMBAL · ESC DISCONNECT';
+    glitchFX();
+    toast('DETAIL REVIEWED — '+d.def.cs,true);
+  },1600);
+}
+function appendTerm(cls,txt){
+  const s=document.createElement('span');
+  if(cls)s.className=cls;
+  s.textContent=txt+'\n';
+  termBody.appendChild(s);
+  termBody.scrollTop=termBody.scrollHeight;
+}
+function updateHack(dt){
+  if(hackPhase==='typing'){
+    hackTimer+=dt*1000;
+    while(hackTimer>0&&hackLineIdx<hackLines.length){
+      const [cls,txt]=hackLines[hackLineIdx];
+      appendTerm(cls,txt);
+      blip(rr(300,500),.015,'square',.012);
+      hackTimer-=lerp(90,260,rnd());
+      hackLineIdx++;
+    }
+    if(hackLineIdx>=hackLines.length){ spawnKeySeq(); }
+  }else if(hackPhase==='keys'){
+    const remain=(seqDeadline-performance.now())/12000;
+    keytimer.style.transform=`scaleX(${clamp(remain,0,1)})`;
+    if(remain<=0){
+      appendTerm('dim','  key rotated — resyncing…');
+      blip(330,.1);
+      spawnKeySeq();
+    }
+  }
+}
+
+/* =============== FPV physics + camera =============== */
+const GEO_CENTER=new THREE.Vector2(300,1300), GEO_R=5200, ALT_MIN=160, ALT_MAX=1150;
+let warnT=0;
+function updateControl(dt){
+  const d=FPV.drone;
+  const fwd=(keys['KeyW']||keys['ArrowUp']?1:0)-(keys['KeyS']||keys['ArrowDown']?1:0);
+  const yawIn=(keys['KeyA']||keys['ArrowLeft']?1:0)-(keys['KeyD']||keys['ArrowRight']?1:0);
+  const strafe=(keys['KeyE']?1:0)-(keys['KeyQ']?1:0);
+  const vert=(keys['KeyR']||keys['Space']?1:0)-(keys['KeyF']||keys['ShiftLeft']?1:0);
+
+  d.yaw+=yawIn*dt*1.15;
+  const sin=Math.sin(d.yaw),cos=Math.cos(d.yaw);
+  const ax=(sin*fwd+cos*strafe)*26;
+  const az=(cos*fwd-sin*strafe)*26;
+  d.vel.x+=ax*dt; d.vel.z+=az*dt;
+  d.vel.y+=vert*dt*14;
+  // wind drift — you feel the gusts
+  d.vel.x+=WIND.vx*dt*.32; d.vel.z+=WIND.vz*dt*.32;
+  d.vel.x*=Math.pow(.45,dt); d.vel.z*=Math.pow(.45,dt); d.vel.y*=Math.pow(.3,dt);
+  const sp=Math.hypot(d.vel.x,d.vel.z);
+  if(sp>38){ d.vel.x*=38/sp; d.vel.z*=38/sp; }
+  d.vel.y=clamp(d.vel.y,-9,9);
+
+  d.pos.x+=d.vel.x*dt; d.pos.y+=d.vel.y*dt; d.pos.z+=d.vel.z*dt;
+
+  const off=new THREE.Vector2(d.pos.x-GEO_CENTER.x,d.pos.z-GEO_CENTER.y);
+  const rad=off.length();
+  let warning=false;
+  if(rad>GEO_R*.86){
+    const over=(rad-GEO_R*.86)/(GEO_R*.14);
+    d.vel.x-=off.x/rad*over*42*dt; d.vel.z-=off.y/rad*over*42*dt;
+    if(rad>GEO_R*.96) warning=true;
+  }
+  const ground=terrainH(d.pos.x/KM,d.pos.z/KM);
+  const floor=Math.max(ALT_MIN,ground+140);
+  if(d.pos.y<floor){ d.pos.y=lerp(d.pos.y,floor,dt*4); d.vel.y=Math.max(d.vel.y,0); if(d.pos.y<floor-2)warning=true; }
+  if(d.pos.y>ALT_MAX){ d.pos.y=lerp(d.pos.y,ALT_MAX,dt*4); d.vel.y=Math.min(d.vel.y,0); }
+
+  $('warnbox').style.display=warning?'block':'none';
+  if(warning){ warnT+=dt; if(warnT>.55){ warnT=0; blip(740,.09,'square',.05);} }
+
+}
+const camE=new THREE.Euler();
+function fpvCam(dt,t){
+  const d=FPV.drone;
+  if(!d)return;
+  if(state==='INTERCEPT'){
+    FPV.gimbalYaw=Math.sin(t*.11)*.5;
+    FPV.gimbalPitch=-.46+Math.sin(t*.07)*.14;
+  }
+  FPV.vibSeed+=dt*34;
+  const vib=(state==='CONTROL'?1:.7)*(1+WIND.gust*.9);
+  const vx=(vnoise(FPV.vibSeed,3.7)-.5)*.5*vib;
+  const vy=(vnoise(FPV.vibSeed,9.1)-.5)*.5*vib;
+  camera.position.set(d.pos.x,d.pos.y-2.2,d.pos.z).add(new THREE.Vector3(vx,vy,0));
+  const latV=(d.vel.x*Math.cos(d.yaw)-d.vel.z*Math.sin(d.yaw));
+  const fwdV=(d.vel.x*Math.sin(d.yaw)+d.vel.z*Math.cos(d.yaw));
+  camE.set(
+    FPV.gimbalPitch + (state==='CONTROL'?fwdV*.0045:0) + (vnoise(FPV.vibSeed,17.3)-.5)*.006*vib,
+    d.yaw+Math.PI+FPV.gimbalYaw,
+    (state==='CONTROL'?-latV*.006:0) + (vnoise(FPV.vibSeed,23.9)-.5)*.005*vib,
+    'YXZ');
+  camera.quaternion.setFromEuler(camE);
+}
+
+/* =============== lo-fi link degradation =============== */
+const GL={next:4,until:0,freezeUntil:0,rssi:-60};
+function updateGlitch(dt,t){
+  const inFeed=(state==='INTERCEPT'||state==='HACKING'||state==='CONTROL')&&!!FPV.drone;
+  if(inFeed){
+    const d=FPV.drone;
+    const gs=new THREE.Vector3(-3000,80,-500);
+    const dist=d.pos.distanceTo(gs);
+    GL.rssi=-42-18*Math.log10(Math.max(dist,100)/100);
+    const bad=clamp((-GL.rssi-58)/26,0,1);        // 0 strong … 1 weak
+    if(t>GL.next){
+      const dur=rr(.18,.45)+bad*rr(.2,.6);
+      GL.until=t+dur;
+      GL.next=t+dur+rr(4,13)*(1.15-bad*.8);
+      if(Math.random()<.12+bad*.25) GL.freezeUntil=t+rr(.12,.3);  // dropped frames
+      staticBurst(Math.min(dur,.5),.05+bad*.06);
+    }
+  }else if(state==='OBSERVER'){
+    if(t>GL.next){                                 // ambient console noise, rarer + softer
+      GL.until=t+rr(.1,.25);
+      GL.next=t+rr(9,20);
+      staticBurst(.15,.025);
+    }
+  }else return;
+  const glitching=t<GL.until;
+  $('fpvfx').classList.toggle('glitch',glitching);
+  $('hud').classList.toggle('glitch',glitching&&inFeed);
+  canvas.classList.toggle('glitchy',glitching&&inFeed);
+  if(inFeed&&glitching&&Math.random()<.3)
+    $('h-link').textContent='LINK ▯▯▯▯ RESYNC';
+}
+
+/* =============== HUD update =============== */
+let hudT=0;
+function pad(n,w){ return String(n).padStart(w,'0'); }
+function updateHUD(dt){
+  hudT+=dt;
+  if(hudT<.08)return; hudT=0;
+  const d=FPV.drone; if(!d)return;
+  const now=gameNow();
+  $('h-time').textContent=now.toISOString().slice(0,10)+' '+now.toISOString().slice(11,19)+'Z';
+  const [lat,lon]=latLon(d.pos.x,d.pos.z);
+  $('h-gps').textContent=`LAT ${lat.toFixed(6)}° N   LON ${lon.toFixed(6)}° E`;
+  const ground=terrainH(d.pos.x/KM,d.pos.z/KM);
+  $('h-alt').textContent='ALT '+Math.round(d.pos.y-ground)+'m AGL';
+  $('h-vs').textContent='VS '+(d.vel.y>=0?'+':'')+d.vel.y.toFixed(1)+' m/s';
+  $('h-gimbal').textContent=`GMB P${Math.round(FPV.gimbalPitch*57.3)}° Y${(FPV.gimbalYaw>=0?'+':'')}${Math.round(FPV.gimbalYaw*57.3)}°`;
+  const sp=Math.hypot(d.vel.x,d.vel.z);
+  $('h-spd').textContent='SPD '+(state==='CONTROL'?sp.toFixed(1):d.speed.toFixed(1))+' m/s';
+  let hdg=Math.atan2(d.vel.x,-d.vel.z);
+  if(state!=='CONTROL'||sp<1){ hdg=Math.atan2(Math.sin(d.yaw+Math.PI),-Math.cos(d.yaw+Math.PI)); }
+  let deg=Math.round(hdg*180/Math.PI); if(deg<0)deg+=360;
+  const CARD=['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
+  $('h-hdg').textContent='HDG '+pad(deg,3)+'° '+CARD[Math.round(deg/22.5)%16];
+  $('h-bat').textContent='BAT '+Math.round(d.battery)+'%';
+  $('h-wnd').textContent=windHUD();
+  $('h-cam').textContent=SUN.lightsOn>.5?'EO/NIGHT · ISO 12800':'EO/DAY · ISO 100';
+  const rssi=Math.round(GL.rssi+(rnd()*2-1));
+  const bars='▮'.repeat(clamp(Math.round((rssi+95)/12),1,4)).padEnd(4,'▯');
+  $('h-link').textContent=`LINK ${bars} ${rssi}dBm`;
+}
+
+/* =============== observer overlays =============== */
+function updateObserverUI(){
+  if(!SHOW_SIM_CONTACTS){ bracket.style.display='none'; hideMarks(); return; }
+  let target=hovered;
+  if(!target) target=drones.find(d=>d.listHot);
+  if(target){
+    const s=projectToScreen(target.pos);
+    if(s){
+      bracket.style.display='block';
+      bracket.style.left=s[0]+'px'; bracket.style.top=s[1]+'px';
+      const r=Math.round(camera.position.distanceTo(target.pos));
+      bracketTag.innerHTML=`${target.def.cs}<br><i>RNG ${(r/1000).toFixed(2)}km · ALT ${Math.round(target.pos.y)}m<br>${target.def.freq} · ${target.def.enc}</i>`;
+    }else bracket.style.display='none';
+  }else bracket.style.display='none';
+  drones.forEach((d,i)=>{
+    const row=contactRows[i];
+    row.classList.toggle('hot',hovered===d);
+    row.children[1].textContent='ALT '+Math.round(d.pos.y)+'m';
+    row.children[2].textContent=d.wasHacked?'REVIEW':'ENC';
+    row.children[2].style.color=d.wasHacked?'var(--green)':'';
+    const el=markEls[i];
+    const s=projectToScreen(d.pos);
+    if(s&&s[0]>-40&&s[0]<innerWidth+40&&s[1]>-60&&s[1]<innerHeight+40){
+      el.style.display='block';
+      el.style.left=s[0]+'px'; el.style.top=s[1]+'px';
+      el.classList.toggle('pwned',!!d.wasHacked);
+      el.classList.toggle('hot',hovered===d||!!d.listHot);
+      el._alt.textContent='ALT '+Math.round(d.pos.y)+'m';
+    }else el.style.display='none';
+  });
+}
+
+/* =============== live threat feed =============== */
+const threatState={payload:null,events:[],sprites:new Map(),els:new Map(),selectedId:null,error:null,lastOk:null};
+const queryParams=new URLSearchParams(location.search);
+const regionState={regions:[],selectedId:queryParams.get('region')||localStorage.getItem('dronewatch.region')||'lebanon'};
+const globalMap={map:null,regions:null,alerts:null,ready:false,lastRegionId:null};
+const threatTex=discTexture(2,64,[[0,'rgba(255,255,255,1)'],[.28,'rgba(255,255,255,.75)'],[1,'rgba(255,255,255,0)']]);
+const threatColorBySeverity={
+  extreme:new THREE.Color(0xff2424),
+  severe:new THREE.Color(0xff4d4d),
+  moderate:new THREE.Color(0xffb454),
+  minor:new THREE.Color(0x7dff9a)
+};
+
+function sceneFromLatLon(lat,lon,alt=520){
+  const x=(lon-LON0)*M_PER_LON;
+  const z=(LAT0-lat)*M_PER_LAT;
+  const ground=terrainH(x/KM,z/KM);
+  return new THREE.Vector3(x,Math.max(ground+alt,220),z);
+}
+function sevClass(v){ return ['extreme','severe','moderate','minor'].includes(v)?v:'minor'; }
+function sevLabel(v){ return String(v||'unknown').toUpperCase(); }
+function eventAge(e){
+  if(e.ageSeconds==null) return 'age unknown';
+  if(e.ageSeconds<60) return e.ageSeconds+'s ago';
+  const m=Math.round(e.ageSeconds/60);
+  if(m<60) return m+'m ago';
+  return Math.round(m/60)+'h ago';
+}
+function timeAgo(value){
+  const ms=Date.now()-new Date(value||0).getTime();
+  if(!Number.isFinite(ms)) return 'time unknown';
+  if(ms<60_000) return 'just now';
+  const min=Math.round(ms/60_000);
+  if(min<60) return min+'m ago';
+  const hr=Math.round(min/60);
+  if(hr<48) return hr+'h ago';
+  return Math.round(hr/24)+'d ago';
+}
+function concise(text,n=150){
+  text=String(text||'').replace(/\s+/g,' ').trim();
+  return text.length>n?text.slice(0,n-1)+'…':text;
+}
+function hasPoint(e){ return Number.isFinite(Number(e.lat))&&Number.isFinite(Number(e.lon)); }
+
+function initGlobalMap(){
+  if(!window.L||globalMap.ready) return;
+  globalMap.map=L.map('leafletMap',{
+    zoomControl:true,
+    worldCopyJump:true,
+    preferCanvas:true,
+    minZoom:2,
+    maxBounds:[[-82,-180],[82,180]],
+    maxBoundsViscosity:.7
+  }).setView([28,28],3);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+    maxZoom:19,
+    attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+  }).addTo(globalMap.map);
+  globalMap.regions=L.layerGroup().addTo(globalMap.map);
+  globalMap.alerts=L.layerGroup().addTo(globalMap.map);
+  globalMap.ready=true;
+  setTimeout(()=>globalMap.map.invalidateSize(),250);
+  addEventListener('resize',()=>globalMap.map?.invalidateSize());
+  drawGlobalMap();
+}
+
+function drawGlobalMap(){
+  if(!globalMap.ready) return;
+  globalMap.regions.clearLayers();
+  globalMap.alerts.clearLayers();
+  const region=selectedRegion();
+  const alertRegionIds=new Set((threatState.events||[]).map(e=>e.regionId).filter(Boolean));
+  for(const r of regionState.regions){
+    const active=r.id===regionState.selectedId;
+    const alert=alertRegionIds.has(r.id);
+    L.circle([r.center.lat,r.center.lon],{
+      radius:r.center.radiusKm*1000,
+      color:active?'#7dff9a':alert?'#ff4d4d':'#ffb454',
+      weight:active?2:1,
+      fillColor:active?'#7dff9a':alert?'#ff4d4d':'#ffb454',
+      fillOpacity:active?0.08:0.035,
+      opacity:active?0.75:0.34,
+      interactive:false
+    }).addTo(globalMap.regions);
+    const icon=L.divIcon({
+      className:'region-icon',
+      html:`<div class="regionPin${active?' active':''}${alert?' alert':''}"><span class="dot"></span>${r.label}</div>`,
+      iconSize:[150,38],
+      iconAnchor:[75,19]
+    });
+    L.marker([r.center.lat,r.center.lon],{icon})
+      .addTo(globalMap.regions)
+      .bindTooltip(`${r.label}<br>${r.note}`,{direction:'top',opacity:.92})
+      .on('click',()=>selectRegion(r.id));
+  }
+  for(const e of threatState.events){
+    if(!hasPoint(e)) continue;
+    const cls=sevClass(e.severity);
+    const icon=L.divIcon({
+      className:'alert-icon',
+      html:`<div class="alertPin ${cls}"></div>`,
+      iconSize:[22,22],
+      iconAnchor:[11,11]
+    });
+    L.marker([Number(e.lat),Number(e.lon)],{icon})
+      .addTo(globalMap.alerts)
+      .bindPopup(`<b>${sevLabel(e.severity)} · ${e.type||'ALERT'}</b><br>${concise(e.title,90)}<br>${concise(e.recommendation||'',140)}`);
+  }
+  if(region&&globalMap.lastRegionId!==region.id){
+    globalMap.map.setView([region.center.lat,region.center.lon], region.center.radiusKm>600?5:region.center.radiusKm>350?6:7, {animate:true});
+    globalMap.lastRegionId=region.id;
+  }
+}
+
+async function initRegions(){
+  const sel=$('regionSelect');
+  if(!sel) return;
+  try{
+    const r=await fetch('/api/regions',{cache:'no-store'});
+    const data=await r.json();
+    if(!r.ok||!data.ok) throw new Error(data.error||'Could not load regions');
+    regionState.regions=data.regions||[];
+    if(!regionState.regions.some(region=>region.id===regionState.selectedId)){
+      regionState.selectedId=data.defaultRegion||'lebanon';
+    }
+    sel.innerHTML='';
+    for(const region of regionState.regions){
+      const opt=document.createElement('option');
+      opt.value=region.id;
+      opt.textContent=region.label;
+      sel.appendChild(opt);
+    }
+    sel.value=regionState.selectedId;
+    updateRegionNote();
+    sel.onchange=()=>selectRegion(sel.value);
+    applyReportDeepLink();
+  }catch(err){
+    $('regionNote').textContent='Region list unavailable; using Lebanon.';
+  }
+}
+
+function selectedRegion(){
+  return regionState.regions.find(r=>r.id===regionState.selectedId)||null;
+}
+
+function applyReportDeepLink(){
+  if(queryParams.get('confirm')) activateDashTab('report');
+}
+
+function updateRegionNote(){
+  const note=$('regionNote');
+  const region=selectedRegion();
+  if(note) note.textContent=region?.note||'Lebanon is the default region.';
+}
+
+function selectRegion(regionId){
+  const sel=$('regionSelect');
+  regionState.selectedId=regionId||'lebanon';
+  if(sel) sel.value=regionState.selectedId;
+  localStorage.setItem('dronewatch.region',regionState.selectedId);
+  threatState.selectedId=null;
+  threatState.payload=null;
+  threatState.events=[];
+  globalMap.lastRegionId=null;
+  syncThreatSprites();
+  updateRegionNote();
+  drawGlobalMap();
+  renderThreatPanel();
+  fetchThreatFeed();
+}
+
+function initDashTabs(){
+  const buttons=[...document.querySelectorAll('#threatTabs button')];
+  for(const btn of buttons){
+    btn.onclick=()=>{
+      activateDashTab(btn.dataset.tab);
+    };
+  }
+}
+
+function activateDashTab(tab){
+  const buttons=[...document.querySelectorAll('#threatTabs button')];
+  for(const b of buttons) b.classList.toggle('active',b.dataset.tab===tab);
+  for(const pane of document.querySelectorAll('.dashTab')) pane.classList.toggle('active',pane.id==='tab-'+tab);
+}
+
+function initSignupForm(){
+  const form=$('signupForm');
+  if(!form) return;
+  form.onsubmit=async e=>{
+    e.preventDefault();
+    const status=$('signupStatus');
+    status.textContent='Saving opt-in...';
+    const payload={
+      contact:$('signupContact').value,
+      channel:$('signupChannel').value,
+      threshold:$('signupThreshold').value,
+      regionId:regionState.selectedId,
+      area:$('signupArea').value
+    };
+    try{
+      const r=await fetch('/api/subscribe',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify(payload)
+      });
+      const data=await r.json();
+      if(!r.ok||!data.ok) throw new Error(data.error||'Signup failed');
+      status.textContent=(data.updated?'Updated':'Opt-in saved')+'. Alerts and verification requests will queue for this region.';
+      form.reset();
+      $('signupArea').value='Beirut sector';
+      $('signupThreshold').value='severe';
+    }catch(err){
+      status.textContent=err.message||'Could not save signup';
+    }
+  };
+}
+
+function initReportForm(){
+  const form=$('reportForm');
+  if(!form) return;
+  form.onsubmit=async e=>{
+    e.preventDefault();
+    const status=$('reportStatus');
+    status.textContent='Submitting unverified report...';
+    const payload={
+      regionId:regionState.selectedId,
+      kind:$('reportKind').value,
+      area:$('reportArea').value,
+      movement:$('reportMovement').value,
+      count:$('reportCount').value,
+      description:$('reportDescription').value,
+      contact:$('reportContact').value,
+      observedAt:new Date().toISOString()
+    };
+    try{
+      const r=await fetch('/api/report',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify(payload)
+      });
+      const data=await r.json();
+      if(!r.ok||!data.ok) throw new Error(data.error||'Could not submit report');
+      const queued=Number(data.confirmationRequestsQueued||0);
+      status.textContent='Report received for review. '+queued+' verification request'+(queued===1?'':'s')+' queued. It will not become alert-grade until corroborated.';
+      form.reset();
+      $('reportCount').value='1';
+      fetchThreatFeed();
+    }catch(err){
+      status.textContent=err.message||'Could not submit report';
+    }
+  };
+}
+
+async function submitReportConfirmation(reportId,response){
+  const status=$('reportStatus');
+  if(status) status.textContent=response==='confirmed'?'Saving confirmation...':'Saving response...';
+  try{
+    const r=await fetch('/api/report-confirmation',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({reportId,response,regionId:regionState.selectedId})
+    });
+    const data=await r.json();
+    if(!r.ok||!data.ok) throw new Error(data.error||'Could not save confirmation');
+    const c=data.confirmations||{};
+    if(status){
+      status.textContent='Response saved. '+(c.confirmed||0)+' confirmation'+((c.confirmed||0)===1?'':'s')+' of '+(data.confirmationThreshold||2)+' needed; status: '+String(data.status||'review').replace('_',' ')+'.';
+    }
+    fetchThreatFeed();
+  }catch(err){
+    if(status) status.textContent=err.message||'Could not save confirmation';
+  }
+}
+
+function renderVerificationList(){
+  const wrap=$('verificationList');
+  if(!wrap) return;
+  wrap.innerHTML='';
+  const reports=threatState.payload?.publicReports?.reports||[];
+  if(!reports.length){
+    const empty=document.createElement('div');
+    empty.className='reportCard';
+    empty.innerHTML='<h5>NO PUBLIC REPORTS AWAITING CONFIRMATION</h5><div class="desc">If something changes, nearby unverified reports will appear here.</div>';
+    wrap.appendChild(empty);
+    return;
+  }
+  const confirmId=queryParams.get('confirm');
+  for(const report of reports){
+    const card=document.createElement('div');
+    card.className='reportCard '+(report.status==='corroborated'?'corroborated':'');
+    if(confirmId&&report.id===confirmId) card.style.outline='1px solid rgba(255,180,84,.55)';
+    const confirmed=report.confirmations?.confirmed||0;
+    const threshold=report.confirmationThreshold||2;
+    card.innerHTML=`<h5></h5><div class="meta"></div><div class="desc"></div><div class="reportActions"><button class="confirm" type="button">I ALSO SAW / HEARD THIS</button><button class="mute" type="button">CAN'T CONFIRM</button></div>`;
+    card.querySelector('h5').textContent=report.kindLabel||'Public report';
+    card.querySelector('.meta').textContent=[report.area, report.regionLabel, String(report.status||'review').replace('_',' '), confirmed+'/'+threshold+' confirmed'].filter(Boolean).join(' · ');
+    card.querySelector('.desc').textContent='Movement: '+(report.movement||'unknown')+' · Count: '+(report.count||1)+' · Received '+timeAgo(report.receivedAt)+'. Confirm only personal observations.';
+    const buttons=card.querySelectorAll('button');
+    buttons[0].onclick=()=>submitReportConfirmation(report.id,'confirmed');
+    buttons[1].onclick=()=>submitReportConfirmation(report.id,'not_seen');
+    wrap.appendChild(card);
+  }
+}
+
+function initPlanForm(){
+  const form=$('planForm');
+  if(!form) return;
+  form.onsubmit=async e=>{
+    e.preventDefault();
+    const status=$('planStatus');
+    status.textContent='Saving pilot request...';
+    const payload={
+      contact:$('planContact').value,
+      tier:$('planTier').value,
+      org:$('planOrg').value
+    };
+    try{
+      const r=await fetch('/api/monetization',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify(payload)
+      });
+      const data=await r.json();
+      if(!r.ok||!data.ok) throw new Error(data.error||'Could not save pilot request');
+      status.textContent='Pilot request saved. Use this list to validate paid demand.';
+      form.reset();
+    }catch(err){
+      status.textContent=err.message||'Could not save pilot request';
+    }
+  };
+}
+
+async function fetchThreatFeed(){
+  try{
+    const url='/api/threats?region='+encodeURIComponent(regionState.selectedId||'lebanon');
+    const r=await fetch(url,{cache:'no-store'});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const payload=await r.json();
+    applyThreatPayload(payload);
+  }catch(err){
+    threatState.error=err.message||String(err);
+    renderThreatPanel();
+  }
+}
+function applyThreatPayload(payload){
+  threatState.payload=payload;
+  threatState.events=payload.events||[];
+  threatState.error=null;
+  threatState.lastOk=new Date();
+  syncThreatSprites();
+  drawGlobalMap();
+  renderThreatPanel();
+}
+function syncThreatSprites(){
+  const active=new Set();
+  for(const e of threatState.events){
+    if(!hasPoint(e)) continue;
+    active.add(e.id);
+    let sp=threatState.sprites.get(e.id);
+    if(!sp){
+      sp=new THREE.Sprite(new THREE.SpriteMaterial({
+        map:threatTex,fog:false,transparent:true,blending:THREE.AdditiveBlending,
+        depthWrite:false,color:threatColorBySeverity[sevClass(e.severity)]
+      }));
+      scene.add(sp);
+      threatState.sprites.set(e.id,sp);
+    }
+    sp.material.color.copy(threatColorBySeverity[sevClass(e.severity)]);
+    sp.position.copy(sceneFromLatLon(Number(e.lat),Number(e.lon),e.severity==='extreme'?700:520));
+    const scale=e.severity==='extreme'?420:e.severity==='severe'?340:260;
+    sp.scale.set(scale,scale,1);
+    sp.visible=true;
+  }
+  for(const [id,sp] of threatState.sprites){
+    if(!active.has(id)){ scene.remove(sp); sp.material.dispose(); threatState.sprites.delete(id); }
+  }
+  for(const [id,el] of threatState.els){
+    if(!active.has(id)){ el.remove(); threatState.els.delete(id); }
+  }
+}
+function focusThreat(e){
+  threatState.selectedId=e.id;
+  if(hasPoint(e)){
+    const p=sceneFromLatLon(Number(e.lat),Number(e.lon),520);
+    ORBIT.tx=p.x; ORBIT.tz=p.z; ORBIT.r=clamp(4200,2600,13000); ORBIT.idle=0;
+    if(state!=='OBSERVER'&&state!=='BOOT') disconnect();
+  }
+  renderThreatPanel();
+  updateThreatMarkers();
+}
+function renderThreatPanel(){
+  const summary=$('threatSummary'), list=$('threatList'), health=$('sourceHealth');
+  if(!summary||!list||!health) return;
+  const payload=threatState.payload;
+  list.innerHTML='';
+  health.innerHTML='';
+  if(threatState.error){
+    summary.innerHTML=`<span><b class="warn">FEED OFFLINE</b><br><span style="color:#72808f">${threatState.error}</span></span><span class="meta">LOCAL</span>`;
+  }else if(payload){
+    const active=payload.summary?.activeEvents||0;
+    const critical=payload.summary?.criticalEvents||0;
+    const status=critical?'<b class="warn">'+critical+' HIGH PRIORITY</b>':active?'<b>'+active+' ACTIVE</b>':'<b>NO ACTIVE ALERTS</b>';
+    const checked=payload.generatedAt?new Date(payload.generatedAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'}):'--';
+    const regionLabel=payload.region?.label||selectedRegion()?.label||'Selected region';
+    const subs=payload.summary?.subscribers||0;
+    const queued=payload.summary?.notificationsQueued||0;
+    const pendingReports=payload.summary?.publicReportsPending||0;
+    const corroboratedReports=payload.summary?.publicReportsCorroborated||0;
+    summary.innerHTML=`<span>${status}<br><span style="color:#72808f">${regionLabel} · ${payload.summary?.sourcesOk||0}/${payload.summary?.sourcesTotal||0} sources · ${pendingReports} pending · ${corroboratedReports} corroborated · ${subs} opt-in · ${queued} queued</span></span><span class="meta">${checked}</span>`;
+  }else{
+    summary.innerHTML='<span>CONNECTING TO SOURCES</span><span class="meta">--</span>';
+  }
+  const events=threatState.events;
+  if(!events.length){
+    const empty=document.createElement('div');
+    empty.className='threatEvent minor';
+    const emptyRegion=threatState.payload?.region?.label||selectedRegion()?.label||'selected region';
+    empty.innerHTML='<div class="trow"><span class="title">NO ACTIVE MATCHING ALERTS</span><span class="sev">CLEAR</span></div><div class="desc"></div><div class="rec">Keep official civil-defense alerts enabled.</div>';
+    empty.querySelector('.desc').textContent='No current feed item matches the configured threat keywords and '+emptyRegion+' radius.';
+    list.appendChild(empty);
+  }
+  for(const e of events.slice(0,8)){
+    const row=document.createElement('div');
+    row.className='threatEvent '+sevClass(e.severity)+(threatState.selectedId===e.id?' hot':'');
+    row.onclick=()=>focusThreat(e);
+    row.innerHTML=`<div class="trow"><span class="title"></span><span class="sev"></span></div>
+      <div class="desc"></div><div class="rec"></div><div class="foot"><span></span><span></span></div>`;
+    row.querySelector('.title').textContent=e.title||'Alert';
+    row.querySelector('.sev').textContent=sevLabel(e.severity);
+    row.querySelector('.desc').textContent=concise(e.description||e.area||e.type||'Alert details unavailable');
+    row.querySelector('.rec').textContent=concise(e.recommendation||e.instruction||'',180);
+    const f=row.querySelectorAll('.foot span');
+    f[0].textContent=(e.confidence||e.sourceType||'source')+' · '+eventAge(e);
+    f[1].textContent=e.source||'unknown source';
+    list.appendChild(row);
+  }
+  if(payload?.sources?.length){
+    for(const s of payload.sources.slice(0,7)){
+      const span=document.createElement('span');
+      span.textContent=(s.ok?'OK ':'ERR ')+s.label+' — '+(s.detail||'checked');
+      health.appendChild(span);
+    }
+  }
+  renderVerificationList();
+}
+function updateThreatMarkers(){
+  const wrap=$('threatMarks');
+  if(!wrap) return;
+  for(const e of threatState.events){
+    if(!hasPoint(e)) continue;
+    let el=threatState.els.get(e.id);
+    if(!el){
+      el=document.createElement('div');
+      el.className='tmark';
+      el.innerHTML='<div class="ring"></div><div class="label"></div>';
+      el.onclick=()=>focusThreat(e);
+      wrap.appendChild(el);
+      threatState.els.set(e.id,el);
+    }
+    const sp=threatState.sprites.get(e.id);
+    const s=sp?projectToScreen(sp.position):null;
+    el.className='tmark '+sevClass(e.severity);
+    if(s&&s[0]>-80&&s[0]<innerWidth+80&&s[1]>-80&&s[1]<innerHeight+80){
+      el.style.display='block';
+      el.style.left=s[0]+'px'; el.style.top=s[1]+'px';
+      el.querySelector('.label').innerHTML=`${sevLabel(e.severity)} · ${e.type||'ALERT'}<i>${concise(e.title,48)}</i>`;
+    }else el.style.display='none';
+  }
+}
+initDashTabs();
+initSignupForm();
+initReportForm();
+initPlanForm();
+initGlobalMap();
+initRegions().then(fetchThreatFeed);
+setInterval(fetchThreatFeed,20000);
+
+/* =============== day/night application =============== */
+const C_FOG_N=new THREE.Color(0x04070d), C_FOG_D=new THREE.Color(0x9fb2c2);
+const C_AMB_N=new THREE.Color(0x0e1626), C_AMB_D=new THREE.Color(0xc8d2dd);
+const C_SUN_D=new THREE.Color(0xfff2dd), C_SUN_DUSK=new THREE.Color(0xff9a52), C_MOON=new THREE.Color(0x9db8e8);
+const C_BLD_N=new THREE.Color(0x0b0e15), C_BLD_D=new THREE.Color(0x7e7c76);
+const C_LAND_N=new THREE.Color(0x0a0c11), C_LAND_D=new THREE.Color(0x6e6a62);
+const C_MNT_N=new THREE.Color(0x0c1016), C_MNT_D=new THREE.Color(0xb5b2aa);
+const C_SAT_N=new THREE.Color(0x0d101a), C_SAT_D=new THREE.Color(0xffffff);
+const C_CLD_N=new THREE.Color(0x26252c), C_CLD_D=new THREE.Color(0xf2f3f5);
+const C_GLINT_N=new THREE.Color(.95,.92,.82), C_GLINT_D=new THREE.Color(1,.85,.6);
+const sunWorld=new THREE.Vector3();
+function applyDayNight(dt){
+  const f=SUN.dayF, on=SUN.lightsOn;
+  scene.userData.sky.uniforms.uSunDir.value.copy(SUN.dir);
+  scene.userData.sky.uniforms.uDayF.value=f;
+  scene.userData.sky.uniforms.uDusk.value=SUN.dusk;
+  scene.userData.stars.uniforms.uNight.value=1-f;
+  const sea=scene.userData.sea.uniforms;
+  sea.uDayF.value=f;
+  if(SUN.el>0){ sunWorld.copy(SUN.dir).multiplyScalar(35000); sea.uGlintPos.value.copy(sunWorld);
+    sea.uGlintCol.value.copy(C_GLINT_D); sea.uGlintGain.value=1.4; }
+  else { sea.uGlintPos.value.copy(moonPos); sea.uGlintCol.value.copy(C_GLINT_N); sea.uGlintGain.value=1; }
+  scene.fog.color.copy(C_FOG_N).lerp(C_FOG_D,f);
+  scene.fog.density=lerp(.000048,.00008,f);
+  ambient.color.copy(C_AMB_N).lerp(C_AMB_D,f);
+  ambient.intensity=lerp(.9,2.1,f);
+  if(SUN.el>0){
+    celestial.position.copy(SUN.dir).multiplyScalar(30000);
+    celestial.color.copy(C_SUN_D).lerp(C_SUN_DUSK,SUN.dusk);
+    celestial.intensity=lerp(.2,1.6,f);
+  }else{
+    celestial.position.copy(moonPos);
+    celestial.color.copy(C_MOON);
+    celestial.intensity=.55;
+  }
+  hemi.intensity=lerp(.35,.9,f);
+  bloom.strength=lerp(.62,.18,f);
+  bloom.threshold=lerp(.22,.6,f);
+  glowPlaneMat.opacity=.22*on;
+  mountainMat.emissiveIntensity=.2*on;
+  mountainMat.color.copy(C_MNT_N).lerp(C_MNT_D,f);
+  buildingMat.color.copy(C_BLD_N).lerp(C_BLD_D,f);
+  landMat.color.copy(C_LAND_N).lerp(C_LAND_D,f);
+  if(satMats.length){
+    if(satFadeIn<1) satFadeIn=Math.min(1,satFadeIn+dt*.5);
+    for(const m of satMats){ m.opacity=satFadeIn; m.color.copy(C_SAT_N).lerp(C_SAT_D,f); }
+  }
+  moonSprite.material.opacity=(1-f)*.95;
+  for(const m of lightMats) m.uniforms.uNight.value=on;
+  for(const c of clouds){
+    c.material.color.copy(C_CLD_N).lerp(C_CLD_D,f);
+    c.material.opacity=c.userData.baseOp*lerp(1,1.5,f);
+  }
+  for(const w of hazeWisps){
+    w.material.color.copy(C_CLD_N).lerp(C_CLD_D,f);
+    w.material.opacity=w.userData.baseOp*lerp(1,1.9,f);
+  }
+}
+
+/* =============== boot sequence =============== */
+let satStatus=USE_3D_BASEMAP?'…':'global overview';
+{
+  const log=$('bootlog');
+  const lines=[
+    ()=>'init alert client ........ <span class="ok">ok</span>',
+    ()=>'load CAP parser .......... <span class="ok">ok</span>',
+    ()=>'load OSINT normalizer .... <span class="ok">ok</span>',
+    ()=>'source confidence model .. <span class="ok">ok</span>',
+    ()=>'geolock: BEIRUT SECTOR ... <span class="ok">ok</span>',
+    ()=>'sat imagery uplink ....... <span class="ok">'+satStatus+'</span>',
+    ()=>'public feed polling ...... <span class="ok">armed</span>',
+  ];
+  let i=0;
+  const iv=setInterval(()=>{
+    if(i>=lines.length){ clearInterval(iv); $('startbtn').classList.add('ready'); return; }
+    log.innerHTML+=lines[i]()+'\n';
+    i++;
+  },340);
+}
+if(USE_3D_BASEMAP){
+  loadSatellite()
+    .then(p=>{ satStatus=p; toast('SAT IMAGERY ONLINE — '+p.toUpperCase()); })
+    .catch(()=>{ satStatus='offline — procedural'; });
+}
+
+let booted=false;
+$('startbtn').onclick=function(){
+  if(booted) return; booted=true;
+  this.blur();
+  $('boot').classList.add('gone');
+  state='OBSERVER';
+  setChrome(true);
+  $('fpvfx').classList.add('on','obs');
+  toast('PUBLIC ALERT FEED ACTIVE');
+};
+
+/* =============== clock =============== */
+const beirutClock=new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Beirut',
+  hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
+setInterval(()=>{
+  const hOff=Math.round(timeOffsetMs/3600e3);
+  const sim=hOff?` · SIM${hOff>0?'+':''}${hOff}H`:'';
+  const region=selectedRegion();
+  const label=(region?.label||'Lebanon').toUpperCase();
+  const center=region?.center||{lat:33.8938,lon:35.5018};
+  $('clockstamp').textContent=`${label} · ${center.lat.toFixed(4)}° ${center.lon.toFixed(4)}° · `
+    +beirutClock.format(gameNow())+' LT'+sim;
+},1000);
+
+/* =============== resize =============== */
+addEventListener('resize',()=>{
+  camera.aspect=innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(devicePixelRatio,PERF.pixelRatio));
+  renderer.setSize(innerWidth,innerHeight);
+  composer.setSize(innerWidth,innerHeight);
+  for(const m of lightMats) m.uniforms.uScale.value=innerHeight*.85;
+});
+
+/* =============== main loop =============== */
+window.HD={scene,drones,camera,disconnect,SUN,WIND,perf:PERF,
+  setHour(h){ const nowB=new Date().toLocaleString('en-US',{timeZone:'Asia/Beirut',hour12:false,hour:'numeric',minute:'numeric'});
+    const [hh,mm]=nowB.split(':').map(Number); timeOffsetMs=(h-(hh+mm/60))*3600e3; },
+  get state(){return state}};
+const glowDir=new THREE.Vector2();
+let lastT=performance.now(), lastFrameT=0, warmFrames=0, sunT=0;
+const FRAME_MS=1000/PERF.targetFps;
+function loop(){
+  requestAnimationFrame(loop);
+  const now=performance.now();
+  if(document.hidden){ lastT=now; return; }
+  if(now-lastFrameT<FRAME_MS) return;
+  lastFrameT=now;
+  let dt=Math.min((now-lastT)/1000,.05);
+  lastT=now;
+  const t=now/1000;
+
+  // a few warm-up frames compile shaders, then skip rendering behind the boot screen
+  if(state==='BOOT'&&warmFrames>=3) return;
+  if(state!=='BOOT'&&!USE_3D_BASEMAP) return;   // global map owns the live operational view
+  for(const d of drones) d.update(dt,t);
+  if(state==='CONTROL') updateControl(dt);
+  if(state==='HACKING') updateHack(dt);
+  updateAirliner(dt,t);
+  updateWind(dt);
+  updateGlitch(dt,t);
+
+  sunT+=dt;
+  if(sunT>2){ sunT=0; updateSun(); }
+  applyDayNight(dt);
+
+  for(const s of strobeLights){
+    const ph=(t*1.4-s.i*.07)%1;
+    s.sp.material.opacity=ph<.05?1:0;
+  }
+  for(const sh of ships){ sh.position.x+=sh.userData.vx*dt; sh.position.z+=sh.userData.vz*dt; }
+  for(const c of clouds){ c.position.x+=(WIND.vx*1.4)*dt; c.position.z+=(WIND.vz*1.4)*dt;
+    if(c.position.x>14*KM)c.position.x=-14*KM; if(c.position.x<-14*KM)c.position.x=14*KM;
+    if(c.position.z>14*KM)c.position.z=-14*KM; if(c.position.z<-14*KM)c.position.z=14*KM; }
+  for(const w of hazeWisps){
+    w.position.x+=WIND.vx*w.userData.mult*dt; w.position.z+=WIND.vz*w.userData.mult*dt;
+    if(w.position.x>10*KM)w.position.x=-10*KM; if(w.position.x<-10*KM)w.position.x=10*KM;
+    if(w.position.z>10*KM)w.position.z=-10*KM; if(w.position.z<-10*KM)w.position.z=10*KM;
+  }
+  if(state==='OBSERVER'){ observerCam(dt); updateObserverUI(); updateThreatMarkers(); }
+  else if(FPV.drone){ fpvCam(dt,t); updateHUD(dt); }
+
+  scene.userData.sea.uniforms.uT.value=t;
+  scene.userData.sea.uniforms.uCam.value.copy(camera.position);
+  scene.userData.stars.uniforms.uT.value=t;
+  glowDir.set(-camera.position.x,-camera.position.z).normalize();
+  scene.userData.sky.uniforms.glowDir.value.copy(glowDir);
+  for(const m of lightMats) m.uniforms.uT.value=t;
+
+  if(state==='BOOT'){ if(warmFrames<3){ warmFrames++; composer.render(); } return; }
+  if(t<GL.freezeUntil) return;                 // dropped frames — hold last image
+  composer.render();
+}
+loop();
+</script>
+</body>
+</html>
