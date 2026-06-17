@@ -1,15 +1,73 @@
 import http from 'node:http';
 import { appendFile, readFile, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createHash } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { XMLParser } from 'fast-xml-parser';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Minimal .env loader (no dependency). Loads KEY=VALUE lines from a local,
+// gitignored .env file so secrets (auth creds, API keys) never live in source.
+function loadDotEnv() {
+  const envPath = path.join(__dirname, '.env');
+  if (!existsSync(envPath)) return;
+  try {
+    for (const raw of readFileSync(envPath, 'utf8').split('\n')) {
+      const line = raw.trim();
+      if (!line || line.startsWith('#')) continue;
+      const eq = line.indexOf('=');
+      if (eq === -1) continue;
+      const key = line.slice(0, eq).trim();
+      let val = line.slice(eq + 1).trim();
+      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+        val = val.slice(1, -1);
+      }
+      if (key && process.env[key] === undefined) process.env[key] = val;
+    }
+  } catch { /* non-fatal */ }
+}
+loadDotEnv();
+
 const PORT = Number(process.env.PORT || 5173);
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || `http://localhost:${PORT}`;
 const REPORT_CONFIRMATION_THRESHOLD = Number(process.env.REPORT_CONFIRMATION_THRESHOLD || 2);
+// Credentials come from the environment / .env only — never hardcode secrets.
+// Auth is enabled only when BASIC_AUTH_PASS is set; otherwise the server is open.
+const BASIC_AUTH_USER = process.env.BASIC_AUTH_USER || 'admin';
+const BASIC_AUTH_PASS = process.env.BASIC_AUTH_PASS || '';
+const BASIC_AUTH_REALM = process.env.BASIC_AUTH_REALM || 'DroneWatch';
+const BASIC_AUTH_ENABLED = Boolean(BASIC_AUTH_PASS);
+
+function safeEqual(a, b) {
+  const ab = Buffer.from(String(a));
+  const bb = Buffer.from(String(b));
+  if (ab.length !== bb.length) return false;
+  return timingSafeEqual(ab, bb);
+}
+
+function checkBasicAuth(req, res) {
+  if (!BASIC_AUTH_ENABLED) return true;
+  const header = req.headers.authorization || '';
+  const [scheme, encoded] = header.split(' ');
+  if (scheme === 'Basic' && encoded) {
+    const decoded = Buffer.from(encoded, 'base64').toString('utf8');
+    const idx = decoded.indexOf(':');
+    const user = decoded.slice(0, idx);
+    const pass = decoded.slice(idx + 1);
+    // Evaluate both comparisons to avoid leaking which field failed via timing.
+    const userOk = safeEqual(user, BASIC_AUTH_USER);
+    const passOk = safeEqual(pass, BASIC_AUTH_PASS);
+    if (userOk && passOk) return true;
+  }
+  res.writeHead(401, {
+    'WWW-Authenticate': `Basic realm="${BASIC_AUTH_REALM}", charset="UTF-8"`,
+    'Content-Type': 'text/plain; charset=utf-8'
+  });
+  res.end('Authentication required');
+  return false;
+}
 const REGIONS = [
   {
     id: 'lebanon',
@@ -1188,6 +1246,7 @@ async function serveStatic(req, res) {
 
 const server = http.createServer(async (req, res) => {
   try {
+    if (!checkBasicAuth(req, res)) return;
     const url = new URL(req.url, `http://${req.headers.host}`);
     if (url.pathname === '/api/health') {
       return json(res, 200, { ok: true, generatedAt: new Date().toISOString() });
